@@ -103,10 +103,12 @@ jobs:
         make -j$(nproc) || make -j1 || make -j1 V=s
         
     - name: 上传 ARMv8 底包
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: openwrt-armvirt-64-rootfs
         path: immortalwrt/bin/targets/armvirt/64/*rootfs.tar.gz
+        compression-level: 0
+        retention-days: 7
         
   package:
     needs: build
@@ -114,14 +116,15 @@ jobs:
     
     steps:
     - name: 检出打包脚本
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         repository: ophub/amlogic-s9xxx-openwrt
         
     - name: 下载编译产物
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: openwrt-armvirt-64-rootfs
+        path: .
         
     - name: 打包 N1 固件
       run: |
@@ -129,7 +132,7 @@ jobs:
         sudo ./make -d -b s905d -k ${{ github.event.inputs.kernel_version }}
         
     - name: 上传固件到 Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ImmortalWrt-N1-${{ github.event.inputs.kernel_version }}-$(date +%Y%m%d)
         files: out/*
