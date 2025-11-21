@@ -31,42 +31,44 @@ jobs:
         remove-codeql: 'true'
         remove-docker-images: 'true'
         
-    - name: 检查磁盘空间
+    - name: 检查初始磁盘空间
       run: |
         echo "初始磁盘空间："
-        df -hT $PWD
+        df -hT $GITHUB_WORKSPACE
         
-    - name: 清理系统空间
+    - name: 安装编译依赖
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
-        docker rmi $(docker images -q) || true
-        sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
-        sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* adoptopenjdk* mysql* php* mongodb* moby* snapd* || true
-        sudo -E apt-get update
-        sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
         bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
         git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
         libmpc-dev libmpfr-dev libncurses5-dev libreadline-dev libssl-dev libtool lrzsz \
         mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip libpython3-dev qemu-utils \
         rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
-        sudo -E apt-get -y autoremove --purge
-        sudo -E apt-get clean
-        echo "清理后磁盘空间："
-        df -hT $PWD
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        echo "安装依赖后磁盘空间："
+        df -hT $GITHUB_WORKSPACE
         
     - name: 克隆 ImmortalWrt 源码
       run: |
+        cd $GITHUB_WORKSPACE
         git clone -b openwrt-23.05 --single-branch --filter=blob:none https://github.com/immortalwrt/immortalwrt
-        ln -sf /immortalwrt $GITHUB_WORKSPACE/immortalwrt
         
     - name: 更新 feeds
-      working-directory: /immortalwrt
       run: |
+        cd $GITHUB_WORKSPACE/immortalwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
     - name: 添加 PassWall 和 OpenClash
-      working-directory: /immortalwrt
       run: |
+        cd $GITHUB_WORKSPACE/immortalwrt
+        
         # 添加 PassWall
         echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main" >> feeds.conf.default
         echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
@@ -81,12 +83,13 @@ jobs:
         git pull --depth 1 origin master
         cd ../..
         
+        # 重新更新 feeds
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
     - name: 生成精简配置
-      working-directory: /immortalwrt
       run: |
+        cd $GITHUB_WORKSPACE/immortalwrt
         cat > .config <<EOF
         CONFIG_TARGET_armvirt=y
         CONFIG_TARGET_armvirt_64=y
@@ -115,37 +118,36 @@ jobs:
         # CONFIG_PACKAGE_luci-app-wol is not set
         EOF
         
-    - name: 下载编译依赖
-      working-directory: /immortalwrt
-      run: |
         make defconfig
+        
+    - name: 下载编译依赖
+      run: |
+        cd $GITHUB_WORKSPACE/immortalwrt
         make download -j16
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
         echo "下载后磁盘空间："
-        df -hT $PWD
+        df -hT $GITHUB_WORKSPACE
         
     - name: 编译固件
-      working-directory: /immortalwrt
       run: |
+        cd $GITHUB_WORKSPACE/immortalwrt
         echo "开始编译，使用 $(nproc) 线程"
         make -j$(nproc) || make -j1 V=s
-        echo "编译完成，磁盘空间："
-        df -hT $PWD
+        echo "编译完成，当前磁盘空间："
+        df -hT $GITHUB_WORKSPACE
         
-    - name: 整理编译产物
-      working-directory: /immortalwrt
+    - name: 检查编译产物
       run: |
-        mkdir -p /tmp/upload
-        cp -f bin/targets/armvirt/64/*rootfs.tar.gz /tmp/upload/ || true
-        echo "产物磁盘空间："
-        df -hT /tmp
+        cd $GITHUB_WORKSPACE/immortalwrt
+        echo "编译产物列表："
+        ls -lh bin/targets/armvirt/64/
         
     - name: 上传 ARMv8 底包
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-armvirt-64-rootfs
-        path: /tmp/upload/*rootfs.tar.gz
+        path: ${{ github.workspace }}/immortalwrt/bin/targets/armvirt/64/*rootfs.tar.gz
         compression-level: 0
         retention-days: 7
         
@@ -155,9 +157,11 @@ jobs:
     
     steps:
     - name: 初始化环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo -E apt-get update
-        sudo -E apt-get -y install wget git
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install wget git sudo
         sudo timedatectl set-timezone "$TZ"
         
     - name: 检出打包脚本
@@ -171,27 +175,70 @@ jobs:
         name: openwrt-armvirt-64-rootfs
         path: openwrt
         
+    - name: 检查下载的文件
+      run: |
+        echo "下载的文件列表："
+        ls -lh openwrt/
+        
     - name: 打包 N1 固件
       run: |
         sudo chmod +x make
-        sudo ./make -d -b s905d -k ${{ github.event.inputs.kernel_version }} openwrt/*rootfs.tar.gz
+        sudo ./make -d -b s905d -k ${{ github.event.inputs.kernel_version }}
         
     - name: 整理固件文件
       run: |
         cd out
-        for file in *; do
-          if [[ "$file" =~ \.img$ ]]; then
+        echo "打包产物列表："
+        ls -lh
+        
+        # 压缩 img 文件
+        for file in *.img; do
+          if [ -f "$file" ]; then
+            echo "压缩 $file"
             gzip "$file"
           fi
         done
-        echo "PACKAGED_OUTPUTPATH=$PWD" >> $GITHUB_ENV
-        echo "固件打包完成"
+        
+        echo "压缩后文件列表："
         ls -lh
+        echo "PACKAGED_OUTPUTPATH=$PWD" >> $GITHUB_ENV
+        
+    - name: 生成 Release 标签
+      id: tag
+      run: |
+        echo "release_tag=ImmortalWrt-N1-k${{ github.event.inputs.kernel_version }}-$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
+        echo "release_date=$(date +"%Y年%m月%d日 %H:%M")" >> $GITHUB_OUTPUT
         
     - name: 上传固件到 Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ImmortalWrt-N1-k${{ github.event.inputs.kernel_version }}-$(date +%Y%m%d)
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        name: ImmortalWrt N1 固件 - 内核 ${{ github.event.inputs.kernel_version }}
+        body: |
+          ## ImmortalWrt 斐讯 N1 固件
+          
+          ### 固件信息
+          - 🔧 内核版本: ${{ github.event.inputs.kernel_version }}
+          - 📅 编译时间: ${{ steps.tag.outputs.release_date }}
+          - 🎯 设备型号: 斐讯 N1 (S905D)
+          - 📦 固件类型: 精简版 (仅包含 PassWall + OpenClash)
+          
+          ### 默认配置
+          - 🌐 默认 IP: `192.168.1.1` 或 `immortalwrt.lan`
+          - 👤 用户名: `root`
+          - 🔑 密码: 无 (首次登录需设置)
+          
+          ### 刷机方式
+          1. 解压 `.img.gz` 文件得到 `.img` 镜像
+          2. 使用工具(如 balenaEtcher/Rufus)将镜像写入 U 盘
+          3. 将 U 盘插入 N1,从 U 盘启动
+          4. 系统启动后执行 `armbian-install` 写入 EMMC
+          
+          ### 已安装插件
+          - ✅ PassWall (科学上网)
+          - ✅ OpenClash (代理工具)
+          - ✅ 中文界面
+          - ✅ SSL 支持
         files: ${{ env.PACKAGED_OUTPUTPATH }}/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
