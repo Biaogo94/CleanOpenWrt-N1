@@ -14,8 +14,6 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: openwrt-23.05
 
 jobs:
   build:
@@ -33,25 +31,25 @@ jobs:
         remove-codeql: 'true'
         remove-docker-images: 'true'
         
-    - name: 安装编译依赖
+    - name: 安装依赖
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+        sudo apt-get update -qq
+        sudo apt-get install -qq ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
         bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
         git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
         libmpc-dev libmpfr-dev libncurses5-dev libreadline-dev libssl-dev libtool lrzsz \
         mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip libpython3-dev qemu-utils \
         rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
+        sudo apt-get autoremove --purge -y
+        sudo apt-get clean
         sudo timedatectl set-timezone "$TZ"
         
     - name: 克隆源码
       run: |
-        git clone -b $REPO_BRANCH --single-branch --filter=blob:none $REPO_URL immortalwrt
+        git clone -b openwrt-23.05 --single-branch --filter=blob:none https://github.com/immortalwrt/immortalwrt
         
     - name: 添加自定义feeds
       run: |
@@ -61,7 +59,7 @@ jobs:
         src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main
         EOF
         
-    - name: 更新feeds
+    - name: 更新和安装feeds
       run: |
         cd immortalwrt
         ./scripts/feeds update -a
@@ -69,36 +67,62 @@ jobs:
         
     - name: 添加OpenClash
       run: |
-        cd immortalwrt
-        git clone --depth=1 https://github.com/vernesong/OpenClash.git package/openclash
+        cd immortalwrt/package
+        git clone --depth=1 https://github.com/vernesong/OpenClash.git
+        mv OpenClash/luci-app-openclash ./
+        rm -rf OpenClash
         
-    - name: 下载官方armvirt配置
+    - name: 生成配置文件
       run: |
         cd immortalwrt
-        wget -O .config https://downloads.immortalwrt.org/releases/23.05.4/targets/armvirt/64/config.buildinfo
         
-    - name: 修改配置添加插件
-      run: |
-        cd immortalwrt
-        # 添加中文和必要插件
-        cat >> .config <<EOF
-        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-        CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
-        CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
+        # 清理旧配置
+        rm -f .config .config.old
+        
+        # 写入完整配置
+        cat > .config <<'EOF'
+        CONFIG_TARGET_armsr=y
+        CONFIG_TARGET_armsr_armv8=y
+        CONFIG_TARGET_armsr_armv8_DEVICE_generic=y
+        CONFIG_TARGET_KERNEL_PARTSIZE=64
+        CONFIG_TARGET_ROOTFS_PARTSIZE=960
+        CONFIG_TARGET_ROOTFS_TARGZ=y
+        
+        # LuCI
+        CONFIG_PACKAGE_luci=y
+        CONFIG_PACKAGE_luci-ssl-openssl=y
+        CONFIG_LUCI_LANG_zh_Hans=y
+        
+        # 必装插件
         CONFIG_PACKAGE_luci-app-passwall=y
         CONFIG_PACKAGE_luci-app-openclash=y
+        
+        # 移除不需要的默认应用
+        # CONFIG_PACKAGE_luci-app-ddns is not set
+        # CONFIG_PACKAGE_luci-app-upnp is not set
+        # CONFIG_PACKAGE_luci-app-vlmcsd is not set
+        # CONFIG_PACKAGE_luci-app-vsftpd is not set
+        # CONFIG_PACKAGE_luci-app-arpbind is not set
+        # CONFIG_PACKAGE_luci-app-autoreboot is not set
+        # CONFIG_PACKAGE_luci-app-filetransfer is not set
+        # CONFIG_PACKAGE_luci-app-turboacc is not set
+        # CONFIG_PACKAGE_luci-app-accesscontrol is not set
+        # CONFIG_PACKAGE_luci-app-nlbwmon is not set
+        # CONFIG_PACKAGE_luci-app-wol is not set
+        # CONFIG_PACKAGE_luci-app-zerotier is not set
         EOF
         
-        # 应用配置
+        # 应用并补全配置
         make defconfig
         
-    - name: 验证配置
+    - name: 确认目标平台
       run: |
         cd immortalwrt
-        echo "=== 目标架构检查 ==="
-        grep "CONFIG_TARGET" .config | head -10
+        echo "===== 当前配置的目标平台 ====="
+        grep "^CONFIG_TARGET" .config | head -20
+        echo "===== 必须是 armsr/armv8 ====="
         
-    - name: 下载编译依赖
+    - name: 下载依赖包
       run: |
         cd immortalwrt
         make download -j16
@@ -107,23 +131,24 @@ jobs:
     - name: 编译固件
       run: |
         cd immortalwrt
-        echo "CPU线程数: $(nproc)"
-        make -j$(($(nproc) + 1)) V=s || make -j1 V=s
+        echo "使用 $(nproc) 个CPU核心编译"
+        make -j$(($(nproc) + 1)) || make -j1 V=s
         
     - name: 检查编译结果
       run: |
         cd immortalwrt
-        echo "=== bin目录结构 ==="
+        echo "===== 编译产物目录 ====="
         ls -lh bin/targets/
-        echo "=== armvirt/64内容 ==="
-        ls -lh bin/targets/armvirt/64/ || echo "错误:没有armvirt目录!"
+        echo "===== armsr/armv8 内容 ====="
+        ls -lh bin/targets/armsr/armv8/ || echo "错误:目录不存在"
         
     - name: 上传固件
       uses: actions/upload-artifact@v4
       with:
-        name: immortalwrt-armvirt-rootfs
-        path: immortalwrt/bin/targets/armvirt/64/*rootfs.tar.gz
+        name: immortalwrt-armsr-rootfs
+        path: immortalwrt/bin/targets/armsr/armv8/*rootfs.tar.gz
         if-no-files-found: error
+        retention-days: 7
         
   package:
     needs: build
@@ -144,25 +169,58 @@ jobs:
     - name: 下载固件
       uses: actions/download-artifact@v4
       with:
-        name: immortalwrt-armvirt-rootfs
+        name: immortalwrt-armsr-rootfs
         path: openwrt
+        
+    - name: 验证文件
+      run: |
+        echo "===== 下载的固件文件 ====="
+        ls -lh openwrt/
         
     - name: 打包N1固件
       run: |
         chmod +x make
-        sudo ./make -d -b s905d -k ${{ inputs.kernel_version }} openwrt/*rootfs.tar.gz
+        sudo ./make -d -b s905d -k ${{ inputs.kernel_version }} openwrt/*.tar.gz
         
-    - name: 压缩固件
+    - name: 整理固件
       run: |
         cd out
-        gzip *.img
+        echo "===== 打包完成的固件 ====="
         ls -lh
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+        for img in *.img; do
+          [ -f "$img" ] && gzip -9 "$img"
+        done
+        echo "===== 压缩后的固件 ====="
+        ls -lh
+        echo "OUTPUT_DIR=$PWD" >> $GITHUB_ENV
+        
+    - name: 生成Release信息
+      id: info
+      run: |
+        echo "tag=N1-k${{ inputs.kernel_version }}-$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
+        echo "date=$(date +'%Y年%m月%d日 %H:%M')" >> $GITHUB_OUTPUT
         
     - name: 发布固件
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: N1-k${{ inputs.kernel_version }}-$(date +%Y%m%d%H%M)
-        files: ${{ env.FIRMWARE_PATH }}/*.img.gz
+        tag_name: ${{ steps.info.outputs.tag }}
+        name: 斐讯N1固件 - 内核${{ inputs.kernel_version }}
+        body: |
+          ## ImmortalWrt 斐讯N1 精简固件
+          
+          **编译时间**: ${{ steps.info.outputs.date }}  
+          **内核版本**: ${{ inputs.kernel_version }}  
+          **设备型号**: 斐讯N1 (Amlogic S905D)
+          
+          ### 已安装插件
+          - ✅ PassWall
+          - ✅ OpenClash
+          - ✅ 中文界面
+          
+          ### 默认设置
+          - IP: `192.168.1.1`
+          - 用户: `root`
+          - 密码: 无
+        files: ${{ env.OUTPUT_DIR }}/*.img.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
