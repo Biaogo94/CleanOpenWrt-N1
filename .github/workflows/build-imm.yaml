@@ -31,7 +31,7 @@ jobs:
         remove-codeql: 'true'
         remove-docker-images: 'true'
         
-    - name: 安装依赖
+    - name: 安装编译依赖
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -47,11 +47,11 @@ jobs:
         sudo apt-get clean
         sudo timedatectl set-timezone "$TZ"
         
-    - name: 克隆源码
+    - name: 克隆 ImmortalWrt 源码
       run: |
         git clone -b openwrt-23.05 --single-branch --filter=blob:none https://github.com/immortalwrt/immortalwrt
         
-    - name: 添加自定义feeds
+    - name: 添加自定义 feeds 源
       run: |
         cd immortalwrt
         cat >> feeds.conf.default <<EOF
@@ -59,13 +59,13 @@ jobs:
         src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main
         EOF
         
-    - name: 更新和安装feeds
+    - name: 更新和安装 feeds
       run: |
         cd immortalwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
-    - name: 添加OpenClash
+    - name: 添加 OpenClash
       run: |
         cd immortalwrt/package
         git clone --depth=1 https://github.com/vernesong/OpenClash.git
@@ -75,11 +75,8 @@ jobs:
     - name: 生成配置文件
       run: |
         cd immortalwrt
-        
-        # 清理旧配置
         rm -f .config .config.old
         
-        # 写入完整配置
         cat > .config <<'EOF'
         CONFIG_TARGET_armsr=y
         CONFIG_TARGET_armsr_armv8=y
@@ -97,7 +94,7 @@ jobs:
         CONFIG_PACKAGE_luci-app-passwall=y
         CONFIG_PACKAGE_luci-app-openclash=y
         
-        # 移除不需要的默认应用
+        # 移除默认应用
         # CONFIG_PACKAGE_luci-app-ddns is not set
         # CONFIG_PACKAGE_luci-app-upnp is not set
         # CONFIG_PACKAGE_luci-app-vlmcsd is not set
@@ -112,15 +109,13 @@ jobs:
         # CONFIG_PACKAGE_luci-app-zerotier is not set
         EOF
         
-        # 应用并补全配置
         make defconfig
         
     - name: 确认目标平台
       run: |
         cd immortalwrt
-        echo "===== 当前配置的目标平台 ====="
+        echo "===== 当前编译目标 ====="
         grep "^CONFIG_TARGET" .config | head -20
-        echo "===== 必须是 armsr/armv8 ====="
         
     - name: 下载依赖包
       run: |
@@ -137,12 +132,10 @@ jobs:
     - name: 检查编译结果
       run: |
         cd immortalwrt
-        echo "===== 编译产物目录 ====="
-        ls -lh bin/targets/
-        echo "===== armsr/armv8 内容 ====="
-        ls -lh bin/targets/armsr/armv8/ || echo "错误:目录不存在"
+        echo "===== 编译产物 ====="
+        ls -lh bin/targets/armsr/armv8/
         
-    - name: 上传固件
+    - name: 上传固件到 artifact
       uses: actions/upload-artifact@v4
       with:
         name: immortalwrt-armsr-rootfs
@@ -155,72 +148,72 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    - name: 初始化环境
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y wget git gzip
-        sudo timedatectl set-timezone "$TZ"
-        
-    - name: 下载打包工具
-      uses: actions/checkout@v4
-      with:
-        repository: ophub/amlogic-s9xxx-openwrt
-        
-    - name: 下载固件
+    - name: 下载编译好的固件
       uses: actions/download-artifact@v4
       with:
         name: immortalwrt-armsr-rootfs
-        path: openwrt
+        path: openwrt-armsr
         
-    - name: 验证文件
+    - name: 验证下载的固件
       run: |
-        echo "===== 下载的固件文件 ====="
-        ls -lh openwrt/
+        echo "===== 固件文件 ====="
+        ls -lh openwrt-armsr/
         
-    - name: 打包N1固件
-      run: |
-        chmod +x make
-        sudo ./make -d -b s905d -k ${{ inputs.kernel_version }} openwrt/*.tar.gz
+    - name: 打包 N1 固件
+      uses: ophub/amlogic-s9xxx-openwrt@main
+      with:
+        openwrt_path: openwrt-armsr/*rootfs.tar.gz
+        openwrt_board: s905d
+        openwrt_kernel: ${{ github.event.inputs.kernel_version }}
+        auto_kernel: true
+        kernel_repo: ophub/kernel
         
-    - name: 整理固件
+    - name: 检查打包结果
       run: |
-        cd out
-        echo "===== 打包完成的固件 ====="
-        ls -lh
-        for img in *.img; do
-          [ -f "$img" ] && gzip -9 "$img"
-        done
-        echo "===== 压缩后的固件 ====="
-        ls -lh
-        echo "OUTPUT_DIR=$PWD" >> $GITHUB_ENV
+        echo "===== 打包后的固件 ====="
+        ls -lh ${{ env.PACKAGED_OUTPUTPATH }}/
         
-    - name: 生成Release信息
-      id: info
+    - name: 生成 Release 信息
+      id: release_info
       run: |
-        echo "tag=N1-k${{ inputs.kernel_version }}-$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
+        echo "tag=ImmortalWrt-N1-k${{ github.event.inputs.kernel_version }}-$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
         echo "date=$(date +'%Y年%m月%d日 %H:%M')" >> $GITHUB_OUTPUT
         
-    - name: 发布固件
+    - name: 上传固件到 Releases
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ steps.info.outputs.tag }}
-        name: 斐讯N1固件 - 内核${{ inputs.kernel_version }}
+        tag_name: ${{ steps.release_info.outputs.tag }}
+        name: ImmortalWrt 斐讯N1 固件 - 内核 ${{ github.event.inputs.kernel_version }}
         body: |
-          ## ImmortalWrt 斐讯N1 精简固件
+          ## 📦 ImmortalWrt 斐讯N1 精简固件
           
-          **编译时间**: ${{ steps.info.outputs.date }}  
-          **内核版本**: ${{ inputs.kernel_version }}  
-          **设备型号**: 斐讯N1 (Amlogic S905D)
+          ### 固件信息
+          - 🔧 **内核版本**: ${{ github.event.inputs.kernel_version }}
+          - 📅 **编译时间**: ${{ steps.release_info.outputs.date }}
+          - 🎯 **设备型号**: 斐讯N1 (Amlogic S905D)
+          - 📦 **固件类型**: 精简版
           
           ### 已安装插件
-          - ✅ PassWall
-          - ✅ OpenClash
+          - ✅ PassWall (科学上网)
+          - ✅ OpenClash (代理工具)
           - ✅ 中文界面
+          - ✅ SSL 支持
           
-          ### 默认设置
-          - IP: `192.168.1.1`
-          - 用户: `root`
-          - 密码: 无
-        files: ${{ env.OUTPUT_DIR }}/*.img.gz
+          ### 默认配置
+          - 🌐 **默认 IP**: `192.168.1.1` 或 `immortalwrt.lan`
+          - 👤 **用户名**: `root`
+          - 🔑 **密码**: 无 (首次登录需设置)
+          
+          ### 刷机方法
+          1. 解压下载的 `.img.gz` 文件
+          2. 使用 balenaEtcher 或 Rufus 将 `.img` 写入 U 盘
+          3. 将 U 盘插入斐讯N1,从 U 盘启动
+          4. 系统启动后,执行 `armbian-install` 命令写入 EMMC
+          
+          ### 注意事项
+          - 如需降级,请先刷回官方固件 V2.22 或更低版本
+          - 首次启动可能需要等待 1-2 分钟
+          - 建议使用有线网络进行初始配置
+        files: ${{ env.PACKAGED_OUTPUTPATH }}/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
