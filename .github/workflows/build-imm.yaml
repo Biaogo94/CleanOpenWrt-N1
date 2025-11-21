@@ -34,7 +34,7 @@ jobs:
     - name: 检查初始磁盘空间
       run: |
         echo "初始磁盘空间："
-        df -hT $GITHUB_WORKSPACE
+        df -hT
         
     - name: 安装编译依赖
       env:
@@ -51,29 +51,28 @@ jobs:
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
-        echo "安装依赖后磁盘空间："
-        df -hT $GITHUB_WORKSPACE
         
     - name: 克隆 ImmortalWrt 源码
       run: |
-        cd $GITHUB_WORKSPACE
         git clone -b openwrt-23.05 --single-branch --filter=blob:none https://github.com/immortalwrt/immortalwrt
         
-    - name: 更新 feeds
+    - name: 添加 PassWall 源
       run: |
-        cd $GITHUB_WORKSPACE/immortalwrt
+        cd immortalwrt
+        cat >> feeds.conf.default <<EOF
+        src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main
+        src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main
+        EOF
+        
+    - name: 更新和安装 feeds
+      run: |
+        cd immortalwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
-    - name: 添加 PassWall 和 OpenClash
+    - name: 添加 OpenClash
       run: |
-        cd $GITHUB_WORKSPACE/immortalwrt
-        
-        # 添加 PassWall
-        echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main" >> feeds.conf.default
-        echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
-        
-        # 添加 OpenClash
+        cd immortalwrt
         mkdir -p package/luci-app-openclash
         cd package/luci-app-openclash
         git init
@@ -81,30 +80,27 @@ jobs:
         git config core.sparsecheckout true
         echo "luci-app-openclash" >> .git/info/sparse-checkout
         git pull --depth 1 origin master
-        cd ../..
         
-        # 重新更新 feeds
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-        
-    - name: 生成精简配置
+    - name: 生成 .config 配置文件
       run: |
-        cd $GITHUB_WORKSPACE/immortalwrt
+        cd immortalwrt
         cat > .config <<EOF
         CONFIG_TARGET_armvirt=y
         CONFIG_TARGET_armvirt_64=y
         CONFIG_TARGET_armvirt_64_Default=y
-        
-        # 基础系统
+        CONFIG_TARGET_ROOTFS_TARGZ=y
         CONFIG_PACKAGE_luci=y
         CONFIG_PACKAGE_luci-ssl-openssl=y
         CONFIG_LUCI_LANG_zh_Hans=y
-        
-        # 只安装 PassWall 和 OpenClash
         CONFIG_PACKAGE_luci-app-passwall=y
         CONFIG_PACKAGE_luci-app-openclash=y
+        EOF
         
-        # 去除不需要的默认软件包
+        # 关键步骤:先 defconfig 再追加禁用项
+        make defconfig
+        
+        # 追加禁用不需要的包
+        cat >> .config <<EOF
         # CONFIG_PACKAGE_luci-app-ddns is not set
         # CONFIG_PACKAGE_luci-app-upnp is not set
         # CONFIG_PACKAGE_luci-app-vlmcsd is not set
@@ -120,36 +116,41 @@ jobs:
         
         make defconfig
         
+    - name: 验证目标架构
+      run: |
+        cd immortalwrt
+        echo "=== 检查 .config 中的目标架构 ==="
+        grep "^CONFIG_TARGET" .config || echo "未找到 TARGET 配置"
+        echo "=== 确认必须是 armvirt/64 ==="
+        
     - name: 下载编译依赖
       run: |
-        cd $GITHUB_WORKSPACE/immortalwrt
-        make download -j16
-        find dl -size -1024c -exec ls -l {} \;
+        cd immortalwrt
+        make download -j16 V=s
         find dl -size -1024c -exec rm -f {} \;
-        echo "下载后磁盘空间："
-        df -hT $GITHUB_WORKSPACE
         
     - name: 编译固件
       run: |
-        cd $GITHUB_WORKSPACE/immortalwrt
+        cd immortalwrt
         echo "开始编译，使用 $(nproc) 线程"
-        make -j$(nproc) || make -j1 V=s
-        echo "编译完成，当前磁盘空间："
-        df -hT $GITHUB_WORKSPACE
+        make -j$(nproc) V=s || make -j1 V=s
         
     - name: 检查编译产物
       run: |
-        cd $GITHUB_WORKSPACE/immortalwrt
-        echo "编译产物列表："
-        ls -lh bin/targets/armvirt/64/
+        cd immortalwrt
+        echo "=== 编译产物目录 ==="
+        ls -lh bin/targets/
+        echo "=== armvirt/64 目录内容 ==="
+        ls -lh bin/targets/armvirt/64/ || echo "错误：armvirt/64 目录不存在！"
         
     - name: 上传 ARMv8 底包
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-armvirt-64-rootfs
-        path: ${{ github.workspace }}/immortalwrt/bin/targets/armvirt/64/*rootfs.tar.gz
+        path: immortalwrt/bin/targets/armvirt/64/*rootfs.tar.gz
         compression-level: 0
         retention-days: 7
+        if-no-files-found: error
         
   package:
     needs: build
@@ -161,7 +162,7 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo -E apt-get -qq update
-        sudo -E apt-get -qq install wget git sudo
+        sudo -E apt-get -qq install wget git sudo gzip
         sudo timedatectl set-timezone "$TZ"
         
     - name: 检出打包脚本
@@ -173,41 +174,41 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: openwrt-armvirt-64-rootfs
-        path: openwrt
+        path: openwrt-armvirt
         
     - name: 检查下载的文件
       run: |
-        echo "下载的文件列表："
-        ls -lh openwrt/
+        echo "=== 下载的固件文件 ==="
+        ls -lh openwrt-armvirt/
         
     - name: 打包 N1 固件
       run: |
         sudo chmod +x make
-        sudo ./make -d -b s905d -k ${{ github.event.inputs.kernel_version }}
+        sudo ./make -d -b s905d -k ${{ github.event.inputs.kernel_version }} openwrt-armvirt/*rootfs.tar.gz
         
     - name: 整理固件文件
       run: |
         cd out
-        echo "打包产物列表："
+        echo "=== 打包生成的固件 ==="
         ls -lh
         
         # 压缩 img 文件
         for file in *.img; do
           if [ -f "$file" ]; then
-            echo "压缩 $file"
-            gzip "$file"
+            echo "正在压缩: $file"
+            gzip -9 "$file"
           fi
         done
         
-        echo "压缩后文件列表："
+        echo "=== 最终固件列表 ==="
         ls -lh
         echo "PACKAGED_OUTPUTPATH=$PWD" >> $GITHUB_ENV
         
-    - name: 生成 Release 标签
+    - name: 生成 Release 信息
       id: tag
       run: |
         echo "release_tag=ImmortalWrt-N1-k${{ github.event.inputs.kernel_version }}-$(date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
-        echo "release_date=$(date +"%Y年%m月%d日 %H:%M")" >> $GITHUB_OUTPUT
+        echo "release_date=$(date +'%Y年%m月%d日 %H:%M')" >> $GITHUB_OUTPUT
         
     - name: 上传固件到 Release
       uses: softprops/action-gh-release@v2
@@ -215,30 +216,30 @@ jobs:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         name: ImmortalWrt N1 固件 - 内核 ${{ github.event.inputs.kernel_version }}
         body: |
-          ## ImmortalWrt 斐讯 N1 固件
+          ## 📦 ImmortalWrt 斐讯 N1 固件
           
           ### 固件信息
-          - 🔧 内核版本: ${{ github.event.inputs.kernel_version }}
-          - 📅 编译时间: ${{ steps.tag.outputs.release_date }}
-          - 🎯 设备型号: 斐讯 N1 (S905D)
-          - 📦 固件类型: 精简版 (仅包含 PassWall + OpenClash)
+          - 🔧 **内核版本**: ${{ github.event.inputs.kernel_version }}
+          - 📅 **编译时间**: ${{ steps.tag.outputs.release_date }}
+          - 🎯 **设备型号**: 斐讯 N1 (Amlogic S905D)
+          - 📦 **固件类型**: 精简版 (仅 PassWall + OpenClash)
           
           ### 默认配置
-          - 🌐 默认 IP: `192.168.1.1` 或 `immortalwrt.lan`
-          - 👤 用户名: `root`
-          - 🔑 密码: 无 (首次登录需设置)
+          - 🌐 **默认 IP**: `192.168.1.1` 或 `immortalwrt.lan`
+          - 👤 **用户名**: `root`
+          - 🔑 **密码**: 无 (首次登录需设置)
           
-          ### 刷机方式
-          1. 解压 `.img.gz` 文件得到 `.img` 镜像
-          2. 使用工具(如 balenaEtcher/Rufus)将镜像写入 U 盘
-          3. 将 U 盘插入 N1,从 U 盘启动
-          4. 系统启动后执行 `armbian-install` 写入 EMMC
+          ### 刷机步骤
+          1. 解压 `.img.gz` 文件
+          2. 使用 balenaEtcher/Rufus 写入 U 盘
+          3. U 盘插入 N1,从 U 盘启动
+          4. 执行 `armbian-install` 写入 EMMC
           
           ### 已安装插件
           - ✅ PassWall (科学上网)
           - ✅ OpenClash (代理工具)
           - ✅ 中文界面
           - ✅ SSL 支持
-        files: ${{ env.PACKAGED_OUTPUTPATH }}/*
+        files: ${{ env.PACKAGED_OUTPUTPATH }}/*.img.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
