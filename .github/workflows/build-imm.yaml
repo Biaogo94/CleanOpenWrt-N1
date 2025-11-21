@@ -12,42 +12,65 @@ on:
           - '5.15'
           - '6.1'
 
+env:
+  TZ: Asia/Shanghai
+
 jobs:
   build:
     runs-on: ubuntu-22.04
     
     steps:
+    - name: 最大化磁盘空间
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 1024
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'true'
+        
     - name: 检查磁盘空间
       run: |
-        sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d
-        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mysql* php* android*
+        echo "初始磁盘空间："
+        df -hT $PWD
+        
+    - name: 清理系统空间
+      run: |
+        docker rmi $(docker images -q) || true
+        sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
+        sudo -E apt-get -y purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* adoptopenjdk* mysql* php* mongodb* moby* snapd* || true
         sudo -E apt-get update
         sudo -E apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
         bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib \
         git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev \
-        libmpc-dev libmpfr-dev libncurses5-dev libncurses5-dev libreadline-dev libssl-dev libtool lrzsz \
+        libmpc-dev libmpfr-dev libncurses5-dev libreadline-dev libssl-dev libtool lrzsz \
         mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip libpython3-dev qemu-utils \
         rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
         sudo -E apt-get -y autoremove --purge
         sudo -E apt-get clean
+        echo "清理后磁盘空间："
+        df -hT $PWD
         
     - name: 克隆 ImmortalWrt 源码
       run: |
         git clone -b openwrt-23.05 --single-branch --filter=blob:none https://github.com/immortalwrt/immortalwrt
-        cd immortalwrt
+        ln -sf /immortalwrt $GITHUB_WORKSPACE/immortalwrt
         
     - name: 更新 feeds
+      working-directory: /immortalwrt
       run: |
-        cd immortalwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
     - name: 添加 PassWall 和 OpenClash
+      working-directory: /immortalwrt
       run: |
-        cd immortalwrt
         # 添加 PassWall
         echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main" >> feeds.conf.default
         echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall.git;main" >> feeds.conf.default
+        
         # 添加 OpenClash
         mkdir -p package/luci-app-openclash
         cd package/luci-app-openclash
@@ -57,12 +80,13 @@ jobs:
         echo "luci-app-openclash" >> .git/info/sparse-checkout
         git pull --depth 1 origin master
         cd ../..
+        
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
     - name: 生成精简配置
+      working-directory: /immortalwrt
       run: |
-        cd immortalwrt
         cat > .config <<EOF
         CONFIG_TARGET_armvirt=y
         CONFIG_TARGET_armvirt_64=y
@@ -86,27 +110,42 @@ jobs:
         # CONFIG_PACKAGE_luci-app-autoreboot is not set
         # CONFIG_PACKAGE_luci-app-filetransfer is not set
         # CONFIG_PACKAGE_luci-app-turboacc is not set
+        # CONFIG_PACKAGE_luci-app-accesscontrol is not set
+        # CONFIG_PACKAGE_luci-app-nlbwmon is not set
+        # CONFIG_PACKAGE_luci-app-wol is not set
         EOF
         
     - name: 下载编译依赖
+      working-directory: /immortalwrt
       run: |
-        cd immortalwrt
         make defconfig
-        make download -j8
+        make download -j16
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
+        echo "下载后磁盘空间："
+        df -hT $PWD
         
     - name: 编译固件
+      working-directory: /immortalwrt
       run: |
-        cd immortalwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "开始编译，使用 $(nproc) 线程"
+        make -j$(nproc) || make -j1 V=s
+        echo "编译完成，磁盘空间："
+        df -hT $PWD
+        
+    - name: 整理编译产物
+      working-directory: /immortalwrt
+      run: |
+        mkdir -p /tmp/upload
+        cp -f bin/targets/armvirt/64/*rootfs.tar.gz /tmp/upload/ || true
+        echo "产物磁盘空间："
+        df -hT /tmp
         
     - name: 上传 ARMv8 底包
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-armvirt-64-rootfs
-        path: immortalwrt/bin/targets/armvirt/64/*rootfs.tar.gz
+        path: /tmp/upload/*rootfs.tar.gz
         compression-level: 0
         retention-days: 7
         
@@ -115,6 +154,12 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
+    - name: 初始化环境
+      run: |
+        sudo -E apt-get update
+        sudo -E apt-get -y install wget git
+        sudo timedatectl set-timezone "$TZ"
+        
     - name: 检出打包脚本
       uses: actions/checkout@v4
       with:
@@ -124,17 +169,29 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: openwrt-armvirt-64-rootfs
-        path: .
+        path: openwrt
         
     - name: 打包 N1 固件
       run: |
         sudo chmod +x make
-        sudo ./make -d -b s905d -k ${{ github.event.inputs.kernel_version }}
+        sudo ./make -d -b s905d -k ${{ github.event.inputs.kernel_version }} openwrt/*rootfs.tar.gz
+        
+    - name: 整理固件文件
+      run: |
+        cd out
+        for file in *; do
+          if [[ "$file" =~ \.img$ ]]; then
+            gzip "$file"
+          fi
+        done
+        echo "PACKAGED_OUTPUTPATH=$PWD" >> $GITHUB_ENV
+        echo "固件打包完成"
+        ls -lh
         
     - name: 上传固件到 Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: ImmortalWrt-N1-${{ github.event.inputs.kernel_version }}-$(date +%Y%m%d)
-        files: out/*
+        tag_name: ImmortalWrt-N1-k${{ github.event.inputs.kernel_version }}-$(date +%Y%m%d)
+        files: ${{ env.PACKAGED_OUTPUTPATH }}/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
