@@ -12,6 +12,11 @@ on:
           - '5.15'
           - '6.1'
 
+# 关键修复: 添加权限配置
+permissions:
+  contents: write
+  actions: read
+
 env:
   TZ: Asia/Shanghai
 
@@ -146,6 +151,9 @@ jobs:
   package:
     needs: build
     runs-on: ubuntu-22.04
+    # 关键修复: job级别权限配置
+    permissions:
+      contents: write
     
     steps:
     - name: 下载编译好的固件
@@ -167,6 +175,7 @@ jobs:
         openwrt_kernel: ${{ github.event.inputs.kernel_version }}
         auto_kernel: true
         kernel_repo: ophub/kernel
+        gh_token: ${{ secrets.GITHUB_TOKEN }}
         
     - name: 检查打包结果
       run: |
