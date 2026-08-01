@@ -26,6 +26,9 @@ env:
   PASSWALL_PACKAGES_REF: b5431e6aa95566234e9645f66efa7f59482f6254
   PASSWALL_REF: b1bec1cf5b5e2ea858d60457ebe00c1388b6a55e
   OPENCLASH_REF: a9e5d98cd664917724dbfb0a31440e512ab45a1b
+  EASYTIER_OPENWRT_REF: 5a6040b44bcc516c85e9eb3f79e2ddeb8830bcf1
+  EASYTIER_VERSION: "2.6.4"
+  EASYTIER_AARCH64_SHA256: f533ec25a7ea714e09f645615012200278058525795cc3bb690ff011aec1a70f
 
 concurrency:
   group: immortalwrt-n1-${{ inputs.kernel_series }}
@@ -104,6 +107,43 @@ jobs:
           mv OpenClash/luci-app-openclash ./
           rm -rf OpenClash
 
+      - name: Add pinned EasyTier packages
+        run: |
+          cd immortalwrt/package
+          git clone \
+            --filter=blob:none \
+            --no-checkout \
+            https://github.com/EasyTier/luci-app-easytier.git easytier-openwrt
+          git -C easytier-openwrt checkout --detach "$EASYTIER_OPENWRT_REF"
+          test "$(git -C easytier-openwrt rev-parse HEAD)" = "$EASYTIER_OPENWRT_REF"
+          test "$(sed -n 's/^EASYTIER_VERSION=//p' easytier-openwrt/version.mk)" = "$EASYTIER_VERSION"
+
+          # The upstream Makefile downloads a release archive during Build/Prepare.
+          # Insert a pinned checksum check before it extracts that archive.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("easytier-openwrt/easytier-noweb/Makefile")
+          lines = path.read_text(encoding="utf-8").splitlines()
+          matches = [
+              index
+              for index, line in enumerate(lines)
+              if "unzip -o -j $(PKG_BUILD_DIR)/easytier-$(PKG_VERSION).zip" in line
+          ]
+          if len(matches) != 1:
+              raise SystemExit(f"Expected one EasyTier extraction command, found {len(matches)}")
+
+          checksum = (
+              '\t\techo "$(EASYTIER_AARCH64_SHA256)  '
+              '$(PKG_BUILD_DIR)/easytier-$(PKG_VERSION).zip" '
+              "| sha256sum -c -; " + "\\"
+          )
+          lines.insert(matches[0], checksum)
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
+
+          grep -F 'sha256sum -c -' easytier-openwrt/easytier-noweb/Makefile
+
       - name: Generate build configuration
         run: |
           cd immortalwrt
@@ -123,6 +163,12 @@ jobs:
 
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-app-openclash=y
+
+          # EasyTier core without its separate web console; managed through LuCI.
+          CONFIG_PACKAGE_kmod-tun=y
+          CONFIG_PACKAGE_easytier-noweb=y
+          CONFIG_PACKAGE_luci-app-easytier=y
+          CONFIG_PACKAGE_luci-i18n-easytier-zh-cn=y
 
           # Phicomm N1 onboard Broadcom BCM43455 Wi-Fi and repeater support.
           CONFIG_PACKAGE_kmod-brcmfmac=y
@@ -174,6 +220,9 @@ jobs:
             ${{ env.PASSWALL_PACKAGES_REF }}-
             ${{ env.PASSWALL_REF }}-
             ${{ env.OPENCLASH_REF }}-
+            ${{ env.EASYTIER_OPENWRT_REF }}-
+            ${{ env.EASYTIER_VERSION }}-
+            ${{ env.EASYTIER_AARCH64_SHA256 }}-
             ${{ hashFiles('immortalwrt/.config') }}
           restore-keys: |
             openwrt-${{ runner.os }}-armsr-
@@ -201,6 +250,9 @@ jobs:
           PassWall packages=${PASSWALL_PACKAGES_REF}
           PassWall LuCI=${PASSWALL_REF}
           OpenClash=${OPENCLASH_REF}
+          EasyTier OpenWrt=${EASYTIER_OPENWRT_REF}
+          EasyTier version=${EASYTIER_VERSION}
+          EasyTier aarch64 SHA256=${EASYTIER_AARCH64_SHA256}
           Requested kernel series=${{ inputs.kernel_series }}
           Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
@@ -322,6 +374,7 @@ jobs:
 
             - PassWall
             - OpenClash
+            - EasyTier ${{ env.EASYTIER_VERSION }} core and LuCI interface
             - LuCI Simplified Chinese interface
             - LuCI HTTPS support
             - Phicomm N1 onboard BCM43455 Wi-Fi support
