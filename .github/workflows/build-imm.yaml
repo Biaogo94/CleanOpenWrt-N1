@@ -15,20 +15,12 @@ on:
           - "6.12"
           - "6.18"
 
-# Jobs opt in to permissions only when required.
 permissions: {}
 
 env:
   TZ: Asia/Shanghai
-
-  # Pinned source revisions. Update these deliberately when upgrading sources.
-  IMMORTALWRT_REF: 0f110722021a93e60e7442ceded7eaea67ff921b
-  PASSWALL_PACKAGES_REF: b5431e6aa95566234e9645f66efa7f59482f6254
-  PASSWALL_REF: b1bec1cf5b5e2ea858d60457ebe00c1388b6a55e
-  OPENCLASH_REF: a9e5d98cd664917724dbfb0a31440e512ab45a1b
-  EASYTIER_OPENWRT_REF: 5a6040b44bcc516c85e9eb3f79e2ddeb8830bcf1
-  EASYTIER_VERSION: "2.6.4"
-  EASYTIER_AARCH64_SHA256: f533ec25a7ea714e09f645615012200278058525795cc3bb690ff011aec1a70f
+  IMMORTALWRT_BRANCH: openwrt-25.12
+  BUILDER_IMAGE: ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 
 concurrency:
   group: immortalwrt-n1-${{ inputs.kernel_series }}
@@ -36,30 +28,18 @@ concurrency:
 
 jobs:
   build:
-    name: Build rootfs
+    name: Build rootfs in GHCR environment
     runs-on: ubuntu-22.04
     timeout-minutes: 330
-    permissions: {}
+    permissions:
+      contents: read
+      packages: read
 
     steps:
-      - name: Install build dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext \
-            gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 \
-            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
-            libncurses5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano \
-            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip libpython3-dev \
-            qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl \
-            unzip vim wget xmlto xxd zlib1g-dev zstd
-          sudo apt-get clean
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Maximize build space
-        # easimon/maximize-build-space master, pinned 2026-08-01
         uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
         with:
           root-reserve-mb: 8192
@@ -71,205 +51,62 @@ jobs:
           remove-codeql: "true"
           remove-docker-images: "true"
 
-      - name: Show disk space
-        run: df -hT
-
-      - name: Clone pinned ImmortalWrt source
-        run: |
-          git clone \
-            --branch openwrt-23.05 \
-            --single-branch \
-            --filter=blob:none \
-            https://github.com/immortalwrt/immortalwrt.git immortalwrt
-          git -C immortalwrt checkout --detach "$IMMORTALWRT_REF"
-          test "$(git -C immortalwrt rev-parse HEAD)" = "$IMMORTALWRT_REF"
-
-      - name: Configure pinned feeds
-        run: |
-          cd immortalwrt
-          {
-            echo "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git^${PASSWALL_PACKAGES_REF}"
-            echo "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git^${PASSWALL_REF}"
-            cat feeds.conf.default
-          } > feeds.conf
-
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Add pinned OpenClash
-        run: |
-          cd immortalwrt/package
-          git clone \
-            --filter=blob:none \
-            --no-checkout \
-            https://github.com/vernesong/OpenClash.git OpenClash
-          git -C OpenClash checkout --detach "$OPENCLASH_REF"
-          mv OpenClash/luci-app-openclash ./
-          rm -rf OpenClash
-
-      - name: Add pinned EasyTier packages
-        run: |
-          cd immortalwrt/package
-          git clone \
-            --filter=blob:none \
-            --no-checkout \
-            https://github.com/EasyTier/luci-app-easytier.git easytier-openwrt
-          git -C easytier-openwrt checkout --detach "$EASYTIER_OPENWRT_REF"
-          test "$(git -C easytier-openwrt rev-parse HEAD)" = "$EASYTIER_OPENWRT_REF"
-          test "$(sed -n 's/^EASYTIER_VERSION=//p' easytier-openwrt/version.mk)" = "$EASYTIER_VERSION"
-
-          # The upstream Makefile downloads a release archive during Build/Prepare.
-          # Insert a pinned checksum check before it extracts that archive.
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("easytier-openwrt/easytier-noweb/Makefile")
-          lines = path.read_text(encoding="utf-8").splitlines()
-          matches = [
-              index
-              for index, line in enumerate(lines)
-              if "unzip -o -j $(PKG_BUILD_DIR)/easytier-$(PKG_VERSION).zip" in line
-          ]
-          if len(matches) != 1:
-              raise SystemExit(f"Expected one EasyTier extraction command, found {len(matches)}")
-
-          checksum = (
-              '\t\techo "$(EASYTIER_AARCH64_SHA256)  '
-              '$(PKG_BUILD_DIR)/easytier-$(PKG_VERSION).zip" '
-              "| sha256sum -c -; " + "\\"
-          )
-          lines.insert(matches[0], checksum)
-          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-          PY
-
-          grep -F 'sha256sum -c -' easytier-openwrt/easytier-noweb/Makefile
-
-      - name: Generate build configuration
-        run: |
-          cd immortalwrt
-          rm -f .config .config.old
-          cat > .config <<'EOF'
-          CONFIG_TARGET_armsr=y
-          CONFIG_TARGET_armsr_armv8=y
-          CONFIG_TARGET_armsr_armv8_DEVICE_generic=y
-          CONFIG_TARGET_KERNEL_PARTSIZE=64
-          CONFIG_TARGET_ROOTFS_PARTSIZE=960
-          CONFIG_TARGET_ROOTFS_TARGZ=y
-          CONFIG_CCACHE=y
-
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl-openssl=y
-          CONFIG_LUCI_LANG_zh_Hans=y
-
-          CONFIG_PACKAGE_luci-app-passwall=y
-          CONFIG_PACKAGE_luci-app-openclash=y
-
-          # PassWall enables Geoview by default on aarch64, but Geoview 0.2.6
-          # requires Go 1.25 while ImmortalWrt 23.05 provides Go 1.21.
-          # CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Geoview is not set
-          # CONFIG_PACKAGE_geoview is not set
-
-          # EasyTier core without its separate web console; managed through LuCI.
-          CONFIG_PACKAGE_kmod-tun=y
-          CONFIG_PACKAGE_easytier-noweb=y
-          CONFIG_PACKAGE_luci-app-easytier=y
-          CONFIG_PACKAGE_luci-i18n-easytier-zh-cn=y
-
-          # Phicomm N1 onboard Broadcom BCM43455 Wi-Fi and repeater support.
-          CONFIG_PACKAGE_kmod-brcmfmac=y
-          CONFIG_BRCMFMAC_SDIO=y
-          # CONFIG_BRCMFMAC_USB is not set
-          CONFIG_PACKAGE_cypress-firmware-43455-sdio=y
-          CONFIG_PACKAGE_iw=y
-          CONFIG_PACKAGE_iwinfo=y
-          CONFIG_PACKAGE_wireless-regdb=y
-          CONFIG_PACKAGE_wpad-basic-mbedtls=y
-
-          # Routed/NAT repeater is preferred; relayd remains available when one subnet is required.
-          CONFIG_PACKAGE_travelmate=y
-          CONFIG_PACKAGE_luci-app-travelmate=y
-          CONFIG_PACKAGE_relayd=y
-          CONFIG_PACKAGE_luci-proto-relay=y
-
-          # Wireless diagnostics and interrupt distribution.
-          CONFIG_PACKAGE_iperf3=y
-          CONFIG_PACKAGE_irqbalance=y
-
-          # CONFIG_PACKAGE_luci-app-ddns is not set
-          # CONFIG_PACKAGE_luci-app-upnp is not set
-          # CONFIG_PACKAGE_luci-app-vlmcsd is not set
-          # CONFIG_PACKAGE_luci-app-vsftpd is not set
-          # CONFIG_PACKAGE_luci-app-arpbind is not set
-          # CONFIG_PACKAGE_luci-app-autoreboot is not set
-          # CONFIG_PACKAGE_luci-app-filetransfer is not set
-          # CONFIG_PACKAGE_luci-app-turboacc is not set
-          # CONFIG_PACKAGE_luci-app-accesscontrol is not set
-          # CONFIG_PACKAGE_luci-app-nlbwmon is not set
-          # CONFIG_PACKAGE_luci-app-wol is not set
-          # CONFIG_PACKAGE_luci-app-zerotier is not set
-          EOF
-
-          make defconfig
-          grep "^CONFIG_TARGET" .config | head -20
-
-      - name: Restore download and compiler cache
-        # actions/cache v4
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - name: Restore downloads and compiler cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
-            immortalwrt/dl
-            ~/.ccache
-          key: >-
-            openwrt-${{ runner.os }}-armsr-
-            ${{ env.IMMORTALWRT_REF }}-
-            ${{ env.PASSWALL_PACKAGES_REF }}-
-            ${{ env.PASSWALL_REF }}-
-            ${{ env.OPENCLASH_REF }}-
-            ${{ env.EASYTIER_OPENWRT_REF }}-
-            ${{ env.EASYTIER_VERSION }}-
-            ${{ env.EASYTIER_AARCH64_SHA256 }}-
-            ${{ hashFiles('immortalwrt/.config') }}
+            .cache/dl
+            .cache/ccache
+          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-${{ github.run_id }}
           restore-keys: |
-            openwrt-${{ runner.os }}-armsr-
+            n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-
+            n1-immortalwrt-${{ runner.os }}-
 
-      - name: Download source archives
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull online build environment
+        id: builder
         run: |
-          cd immortalwrt
-          make download -j"$(nproc)" || make download -j1 V=s
-          find dl -type f -size -1024c -print -delete
-          make download -j"$(nproc)"
+          docker pull "$BUILDER_IMAGE"
+          digest="$(docker image inspect "$BUILDER_IMAGE" --format '{{index .RepoDigests 0}}')"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Compile rootfs
+      - name: Build ImmortalWrt rootfs
+        env:
+          BUILDER_IMAGE_DIGEST: ${{ steps.builder.outputs.digest }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd immortalwrt
-          echo "Building with $(nproc) CPU cores"
-          make -j"$(($(nproc) + 1))" || make -j1 V=s
+          mkdir -p .cache/dl .cache/ccache
+          docker run --rm \
+            --env BUILDER_IMAGE \
+            --env BUILDER_IMAGE_DIGEST \
+            --env GITHUB_TOKEN \
+            --env IMMORTALWRT_BRANCH \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$GITHUB_WORKSPACE/.cache:/cache" \
+            --workdir /workspace \
+            "$BUILDER_IMAGE" \
+            bash scripts/build-immortalwrt.sh
 
-      - name: Prepare rootfs artifact
-        run: |
-          mkdir -p rootfs-artifact
-          cp immortalwrt/bin/targets/armsr/armv8/*rootfs.tar.gz rootfs-artifact/
-
-          cat > rootfs-artifact/BUILD_INFO.txt <<EOF
-          ImmortalWrt=${IMMORTALWRT_REF}
-          PassWall packages=${PASSWALL_PACKAGES_REF}
-          PassWall LuCI=${PASSWALL_REF}
-          OpenClash=${OPENCLASH_REF}
-          EasyTier OpenWrt=${EASYTIER_OPENWRT_REF}
-          EasyTier version=${EASYTIER_VERSION}
-          EasyTier aarch64 SHA256=${EASYTIER_AARCH64_SHA256}
-          Requested kernel series=${{ inputs.kernel_series }}
-          Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          EOF
-
-          ls -lh rootfs-artifact/
+      - name: Save downloads and compiler cache
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/dl
+            .cache/ccache
+          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-${{ github.run_id }}
 
       - name: Upload rootfs artifact
-        # actions/upload-artifact v4
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: immortalwrt-rootfs-${{ github.run_id }}
-          path: rootfs-artifact/
+          path: artifacts/rootfs/
           if-no-files-found: error
           retention-days: 7
 
@@ -278,22 +115,18 @@ jobs:
     needs: build
     runs-on: ubuntu-22.04
     timeout-minutes: 90
-    permissions: {}
+    permissions:
+      contents: read
 
     steps:
       - name: Download rootfs artifact
-        # actions/download-artifact v4
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: immortalwrt-rootfs-${{ github.run_id }}
           path: openwrt-armsr
 
-      - name: Verify rootfs artifact
-        run: ls -lh openwrt-armsr/
-
       - name: Package Phicomm N1 image
-        # ophub/amlogic-s9xxx-openwrt main, pinned 2026-08-01
-        uses: ophub/amlogic-s9xxx-openwrt@c9ae70b653faf58a1aa9c85a75223ad0ffa04e50
+        uses: ophub/amlogic-s9xxx-openwrt@34c28d7d3161c8e4b791b91626f4b76353fb3759
         with:
           openwrt_path: openwrt-armsr/*rootfs.tar.gz
           openwrt_board: s905d
@@ -302,30 +135,24 @@ jobs:
           kernel_repo: ophub/kernel
           openwrt_size: 256/1024
 
-      - name: Prepare packaged artifact and checksums
+      - name: Prepare packaged artifact
         run: |
           test -n "${PACKAGED_OUTPUTPATH:-}"
           test -d "$PACKAGED_OUTPUTPATH"
-
           cp openwrt-armsr/BUILD_INFO.txt "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
-
           actual_kernels="$({
             find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' -printf '%f\n'
           } | sed -nE 's/.*_k([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | sort -Vu | paste -sd, -)"
           actual_kernels="${actual_kernels:-unknown}"
+          echo "Requested kernel series=${{ inputs.kernel_series }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           echo "Actual kernels=${actual_kernels}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
-
+          echo "Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           (
             cd "$PACKAGED_OUTPUTPATH"
-            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \
-              | sort -z \
-              | xargs -0 -r sha256sum
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' | sort -z | xargs -0 -r sha256sum
           ) > "$PACKAGED_OUTPUTPATH/SHA256SUMS"
 
-          ls -lh "$PACKAGED_OUTPUTPATH/"
-
       - name: Upload packaged artifact
-        # actions/upload-artifact v4
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: immortalwrt-n1-${{ github.run_id }}
@@ -343,7 +170,6 @@ jobs:
 
     steps:
       - name: Download packaged artifact
-        # actions/download-artifact v4
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: immortalwrt-n1-${{ github.run_id }}
@@ -353,12 +179,12 @@ jobs:
         id: metadata
         run: |
           actual_kernels="$(sed -n 's/^Actual kernels=//p' firmware/BUILD_INFO.txt | tail -n 1)"
+          easytier_version="$(sed -n 's/^EasyTier version=//p' firmware/BUILD_INFO.txt | tail -n 1)"
           echo "actual_kernels=${actual_kernels:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "easytier_version=${easytier_version:-unknown}" >> "$GITHUB_OUTPUT"
           echo "build_date=$(date +'%Y-%m-%d %H:%M %Z')" >> "$GITHUB_OUTPUT"
-          ls -lh firmware/
 
       - name: Publish GitHub release
-        # softprops/action-gh-release v2
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           tag_name: ImmortalWrt-N1-k${{ inputs.kernel_series }}-r${{ github.run_number }}
@@ -370,35 +196,16 @@ jobs:
             ## Firmware information
 
             - Device: Phicomm N1 (Amlogic S905D)
+            - ImmortalWrt branch: `openwrt-25.12` (latest revision at build time)
             - Requested kernel series: `${{ inputs.kernel_series }}`
             - Actual kernel: `${{ steps.metadata.outputs.actual_kernels }}`
+            - EasyTier: `${{ steps.metadata.outputs.easytier_version }}`
             - Build time: `${{ steps.metadata.outputs.build_date }}`
             - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            ## Included packages
+            Includes PassWall, OpenClash, EasyTier, onboard BCM43455 Wi-Fi,
+            Travelmate routed repeater support, and optional relayd pseudo-bridge support.
 
-            - PassWall
-            - OpenClash
-            - EasyTier ${{ env.EASYTIER_VERSION }} core and LuCI interface
-            - LuCI Simplified Chinese interface
-            - LuCI HTTPS support
-            - Phicomm N1 onboard BCM43455 Wi-Fi support
-            - Travelmate routed wireless repeater support
-            - relayd pseudo-bridge support (optional)
-
-            ## Default login
-
-            - Address: `http://192.168.1.1` or `http://immortalwrt.lan`
-            - Username: `root`
-            - Password: empty; set a password immediately after first login
-
-            ## Installation
-
-            1. Verify the downloaded file against `SHA256SUMS`.
-            2. Write the `.img.gz` image to a USB drive with Rufus or balenaEtcher.
-            3. Boot the Phicomm N1 from the USB drive.
-            4. In LuCI, open `System -> Amlogic Treasure Box -> Install OpenWrt` and select the N1.
-
-            Back up the original eMMC system before installation. Firmware installation is performed at your own risk.
+            Verify the image with `SHA256SUMS` and back up eMMC before installation.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
