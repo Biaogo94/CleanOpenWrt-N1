@@ -39,29 +39,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
-        with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 1024
-          swap-size-mb: 2048
-          remove-dotnet: "true"
-          remove-android: "true"
-          remove-haskell: "true"
-          remove-codeql: "true"
-          remove-docker-images: "true"
-
-      - name: Restore downloads and compiler cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            .cache/dl
-            .cache/ccache
-          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-${{ github.run_id }}
-          restore-keys: |
-            n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-
-            n1-immortalwrt-${{ runner.os }}-
-
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -75,6 +52,29 @@ jobs:
           docker pull "$BUILDER_IMAGE"
           digest="$(docker image inspect "$BUILDER_IMAGE" --format '{{index .RepoDigests 0}}')"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 1024
+          swap-size-mb: 2048
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          remove-docker-images: "false"
+
+      - name: Restore downloads and compiler cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .cache/dl
+            .cache/ccache
+          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-
+            n1-immortalwrt-${{ runner.os }}-
 
       - name: Build ImmortalWrt rootfs
         env:
