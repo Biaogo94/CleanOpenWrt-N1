@@ -131,7 +131,7 @@ make -j"$(nproc)" || make -j1 V=s
 ccache --show-stats
 
 shopt -s nullglob
-rootfs_files=(bin/targets/armsr/armv8/*rootfs.tar.gz)
+rootfs_files=(bin/targets/armsr/armv8/*-generic-rootfs.tar.gz)
 if (( ${#rootfs_files[@]} == 0 )); then
   echo "No armsr/armv8 rootfs archive was produced" >&2
   exit 1
