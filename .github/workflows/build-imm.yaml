@@ -173,6 +173,7 @@ jobs:
   release:
     name: Publish release
     needs: package
+    if: ${{ always() && !cancelled() && needs.package.result == 'success' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
