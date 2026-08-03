@@ -214,8 +214,9 @@ jobs:
             - Build time: `${{ steps.metadata.outputs.build_date }}`
             - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            Includes PassWall, OpenClash, EasyTier, onboard BCM43455 Wi-Fi,
-            Travelmate routed repeater support, and optional relayd pseudo-bridge support.
+            Includes PassWall, OpenClash, EasyTier, Amlogic Treasure Box,
+            onboard BCM43455 Wi-Fi, Travelmate routed repeater support,
+            and optional relayd pseudo-bridge support.
 
             Verify the image with `SHA256SUMS` and back up eMMC before installation.
         env:

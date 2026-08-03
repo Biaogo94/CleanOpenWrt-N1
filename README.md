@@ -12,6 +12,7 @@
 - PassWall 与简体中文界面
 - OpenClash
 - EasyTier 核心、LuCI 管理界面和简体中文翻译
+- 晶晨宝盒（`luci-app-amlogic`），支持安装 OpenWrt 到 eMMC、系统更新和配置备份
 - N1 板载 Broadcom BCM43455 Wi-Fi 支持，不依赖 USB 无线网卡
 - Travelmate 路由/NAT 中继和 relayd 伪桥接支持
 - `iperf3`、`iw`、`iwinfo`、`irqbalance` 等诊断与调优工具
@@ -87,6 +88,7 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 
 - 首次使用建议先写入 USB 存储设备并完成启动、网络和插件测试
 - 写入 eMMC 前务必备份原系统和重要数据
+- 从 USB 启动并确认运行正常后，可进入 `系统 → 晶晨宝盒 → 安装 OpenWrt`，设备选择斐讯 N1
 - 默认管理地址通常为 `http://192.168.1.1`
 - 默认用户名为 `root`，首次登录后应立即设置强密码
 - 刷写、更新内核或写入 eMMC 均存在设备无法启动和数据丢失风险

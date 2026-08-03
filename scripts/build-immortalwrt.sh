@@ -39,6 +39,9 @@ readonly easytier_openwrt_ref="$(git -C package/easytier-openwrt rev-parse HEAD)
 readonly easytier_version="$(sed -n 's/^EASYTIER_VERSION=//p' package/easytier-openwrt/version.mk)"
 readonly easytier_asset="easytier-linux-aarch64-v${easytier_version}.zip"
 
+git clone --depth 1 https://github.com/ophub/luci-app-amlogic.git package/luci-app-amlogic
+readonly amlogic_ref="$(git -C package/luci-app-amlogic rev-parse HEAD)"
+
 curl_args=(
   --fail --silent --show-error --location
   --header "Accept: application/vnd.github+json"
@@ -95,6 +98,7 @@ CONFIG_LUCI_LANG_zh_Hans=y
 
 CONFIG_PACKAGE_luci-app-passwall=y
 CONFIG_PACKAGE_luci-app-openclash=y
+CONFIG_PACKAGE_luci-app-amlogic=y
 
 CONFIG_PACKAGE_kmod-tun=y
 CONFIG_PACKAGE_easytier-noweb=y
@@ -119,6 +123,20 @@ CONFIG_PACKAGE_irqbalance=y
 EOF
 
 make defconfig
+
+required_symbols=(
+  PACKAGE_luci-app-amlogic
+  PACKAGE_luci-app-easytier
+  PACKAGE_luci-app-openclash
+  PACKAGE_luci-app-passwall
+)
+for symbol in "${required_symbols[@]}"; do
+  grep -qx "CONFIG_${symbol}=y" .config || {
+    echo "Required build option CONFIG_${symbol}=y is unavailable" >&2
+    exit 1
+  }
+done
+
 rm -rf dl
 ln -s "$CACHE_DIR/dl" dl
 ccache --max-size "$CCACHE_MAXSIZE"
@@ -147,6 +165,7 @@ OpenClash=${openclash_ref}
 EasyTier OpenWrt=${easytier_openwrt_ref}
 EasyTier version=${easytier_version}
 EasyTier aarch64 SHA256=${easytier_sha256}
+Amlogic Treasure Box=${amlogic_ref}
 Builder image=${BUILDER_IMAGE:-unknown}
 Builder digest=${BUILDER_IMAGE_DIGEST:-unknown}
 EOF
