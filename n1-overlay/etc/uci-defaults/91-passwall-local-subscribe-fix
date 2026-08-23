@@ -1,0 +1,14 @@
+#!/bin/sh
+
+converter="${PASSWALL_CONVERTER:-/usr/share/passwall/clash_subconverter.lua}"
+guard='\tif not headers then return nil end'
+
+if [ -f "$converter" ] && \
+   grep -q '^function parse_clash_sub_info(headers)' "$converter" && \
+   ! grep -q 'if not headers then return nil end' "$converter"; then
+	sed -i "/^function parse_clash_sub_info(headers)/a\\${guard}" "$converter"
+	command -v logger >/dev/null 2>&1 && \
+		logger -t passwall-fix "guarded local subscription parsing without HTTP headers"
+fi
+
+exit 0

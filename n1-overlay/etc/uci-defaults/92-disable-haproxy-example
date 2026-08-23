@@ -1,0 +1,10 @@
+#!/bin/sh
+
+# The package default starts public example listeners on ports 81, 444 and
+# 60000. PassWall launches its generated HAProxy configuration independently.
+if [ -x /etc/init.d/haproxy ]; then
+	/etc/init.d/haproxy stop >/dev/null 2>&1
+	/etc/init.d/haproxy disable >/dev/null 2>&1
+fi
+
+exit 0

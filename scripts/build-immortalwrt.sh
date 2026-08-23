@@ -10,6 +10,18 @@ readonly IMMORTALWRT_BRANCH="${IMMORTALWRT_BRANCH:-openwrt-25.12}"
 export CCACHE_DIR="${CCACHE_DIR:-${CACHE_DIR}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-3G}"
 
+assert_workspace_child() {
+  local candidate parent
+  candidate="$(realpath -m "$1")"
+  parent="$(realpath -m "$WORKSPACE")"
+  if [[ "$candidate" == "$parent" || "$candidate" != "$parent"/* ]]; then
+    echo "Refusing to delete path outside WORKSPACE: ${candidate}" >&2
+    exit 1
+  fi
+}
+
+assert_workspace_child "$SOURCE_DIR"
+assert_workspace_child "$ARTIFACT_DIR"
 rm -rf "$SOURCE_DIR" "$ARTIFACT_DIR"
 mkdir -p "$(dirname "$SOURCE_DIR")" "$CACHE_DIR/dl" "$CCACHE_DIR" "$ARTIFACT_DIR"
 

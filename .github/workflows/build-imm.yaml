@@ -144,6 +144,7 @@ jobs:
           auto_kernel: "true"
           kernel_repo: ophub/kernel
           openwrt_size: 256/1024
+          openwrt_files: n1-overlay
 
       - name: Prepare packaged artifact
         run: |

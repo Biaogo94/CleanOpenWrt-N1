@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+n1-overlay/etc/uci-defaults/* text eol=lf

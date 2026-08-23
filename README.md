@@ -66,7 +66,8 @@ ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 板载单无线芯片同时连接上游并提供 AP 时需要共享信道，实际吞吐量通常会明显低于单独作为客户端或 AP。建议：
 
 - 优先连接信号稳定的 5 GHz 上游网络
-- 固定合适的国家/地区代码和非拥挤信道
+- 中国监管域下，当前 BCM43455 固件应优先使用 149、153、157 或 161 信道；实测 36–144 信道可能被固件拒绝
+- 若上游 5 GHz 路由器固定在 36–144 信道，请先将上游改到 149–161，再由 Travelmate 建立连接
 - 将 N1 放置在上游信号较强、通风良好的位置
 - 使用 `iwinfo` 查看信号、速率和信道，使用 `iperf3` 测试局域网实际吞吐量
 - 不要仅依据测速网站判断无线性能，先排除上游宽带和代理节点影响
@@ -103,6 +104,11 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 |-- Dockerfile                                # Ubuntu 24.04 编译环境
 `-- .dockerignore
 ```
+
+`n1-overlay` 会在首次启动时修复 ophub 打包器对 `mac80211.sh` 的错误
+`iw` → `ipconfig` 替换、补齐 N1 的 BCM43455 CLM 链接，并将默认 AP 信道设为 149。
+它还会修复 PassWall 离线订阅的空 HTTP headers 异常，并关闭 HAProxy 包自带的
+81/444/60000 示例监听；PassWall 自己生成的 HAProxy 配置不受影响。
 
 ## 致谢
 

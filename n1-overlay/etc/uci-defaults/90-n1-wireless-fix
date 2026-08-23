@@ -1,0 +1,31 @@
+#!/bin/sh
+
+wireless_script="/lib/netifd/wireless/mac80211.sh"
+wireless_backup="${wireless_script}.bak"
+firmware_dir="/lib/firmware/brcm"
+generic_clm="${firmware_dir}/brcmfmac43455-sdio.clm_blob"
+board_clm="${firmware_dir}/brcmfmac43455-sdio.phicomm,n1.clm_blob"
+
+# ophub's packer replaces every `iw ` token with `ipconfig ` but does not ship
+# ipconfig. It keeps the original script as .bak, so restore that known-good
+# copy before netifd starts the first wireless interface.
+if [ -f "$wireless_backup" ] && grep -q 'ipconfig ' "$wireless_script"; then
+	cp -p "$wireless_backup" "$wireless_script"
+	chmod 0755 "$wireless_script"
+	logger -t n1-wireless-fix "restored mac80211.sh after invalid ipconfig rewrite"
+fi
+
+if [ -e "$generic_clm" ] && [ ! -e "$board_clm" ]; then
+	ln -s brcmfmac43455-sdio.clm_blob "$board_clm"
+fi
+
+if uci -q get wireless.radio0 >/dev/null; then
+	uci set wireless.radio0.country='CN'
+	mode="$(uci -q get wireless.default_radio0.mode)"
+	if [ "$mode" = 'ap' ]; then
+		uci set wireless.radio0.channel='149'
+	fi
+	uci commit wireless
+fi
+
+exit 0
