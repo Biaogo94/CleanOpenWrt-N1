@@ -143,16 +143,19 @@ jobs:
       - name: Package Phicomm N1 image
         uses: ophub/amlogic-s9xxx-openwrt@34c28d7d3161c8e4b791b91626f4b76353fb3759
         with:
+          openwrt_files: n1-overlay
           openwrt_path: openwrt-armsr/*rootfs.tar.gz
           openwrt_board: s905d
           openwrt_kernel: ${{ inputs.kernel_series }}
           auto_kernel: "true"
           kernel_repo: ophub/kernel
           openwrt_size: 256/1024
-          openwrt_files: n1-overlay
 
       - name: Prepare packaged artifact
         run: |
+          test -f n1-overlay/etc/uci-defaults/90-n1-wireless-fix
+          test -f n1-overlay/etc/uci-defaults/91-passwall-local-subscribe-fix
+          test -f n1-overlay/etc/uci-defaults/92-disable-haproxy-example
           test -n "${PACKAGED_OUTPUTPATH:-}"
           test -d "$PACKAGED_OUTPUTPATH"
           cp openwrt-armsr/BUILD_INFO.txt "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
@@ -160,6 +163,7 @@ jobs:
             find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' -printf '%f\n'
           } | sed -nE 's/.*_k([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | sort -Vu | paste -sd, -)"
           actual_kernels="${actual_kernels:-unknown}"
+          test "$actual_kernels" != unknown
           echo "Requested kernel series=${{ inputs.kernel_series }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           echo "Actual kernels=${actual_kernels}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           echo "Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"

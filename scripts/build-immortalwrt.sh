@@ -6,6 +6,14 @@ readonly SOURCE_DIR="${SOURCE_DIR:-${WORKSPACE}/.build/immortalwrt}"
 readonly CACHE_DIR="${CACHE_DIR:-/cache}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:-${WORKSPACE}/artifacts/rootfs}"
 readonly IMMORTALWRT_BRANCH="${IMMORTALWRT_BRANCH:-openwrt-25.12}"
+readonly IMMORTALWRT_REF="${IMMORTALWRT_REF:-3a0e732472ba6b0476bd974a01cdb7930e13f7fe}"
+readonly IMMORTALWRT_PACKAGES_REF="${IMMORTALWRT_PACKAGES_REF:-a874f8aabbf21af382a6bab90d300e50ebccadb0}"
+readonly IMMORTALWRT_LUCI_REF="${IMMORTALWRT_LUCI_REF:-5eb439f0f87e125cf0c2ffcbecffa79e4c7c441b}"
+readonly PASSWALL_PACKAGES_REF="${PASSWALL_PACKAGES_REF:-f7f253de5d10f4aefa170c4006be926796c88d10}"
+readonly PASSWALL_LUCI_REF="${PASSWALL_LUCI_REF:-cfab375650b69b79c52da681a713eaac2dd7bc73}"
+readonly OPENCLASH_REF="${OPENCLASH_REF:-c3a33c1d3407956fdf8f0e0b7c1a4c52e6ad9593}"
+readonly EASYTIER_OPENWRT_REF="${EASYTIER_OPENWRT_REF:-5a6040b44bcc516c85e9eb3f79e2ddeb8830bcf1}"
+readonly AMLOGIC_REF="${AMLOGIC_REF:-8fe2b60b4d63e2d83fbe5eb12c37c77a892c0117}"
 
 export CCACHE_DIR="${CCACHE_DIR:-${CACHE_DIR}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-3G}"
@@ -25,9 +33,26 @@ assert_workspace_child "$ARTIFACT_DIR"
 rm -rf "$SOURCE_DIR" "$ARTIFACT_DIR"
 mkdir -p "$(dirname "$SOURCE_DIR")" "$CACHE_DIR/dl" "$CCACHE_DIR" "$ARTIFACT_DIR"
 
-git clone --depth 1 --branch "$IMMORTALWRT_BRANCH" --single-branch \
-  https://github.com/immortalwrt/immortalwrt.git "$SOURCE_DIR"
-readonly immortalwrt_ref="$(git -C "$SOURCE_DIR" rev-parse HEAD)"
+clone_at() {
+  local repo="$1" ref="$2" destination="$3"
+  git init -q "$destination"
+  git -C "$destination" remote add origin "$repo"
+  git -C "$destination" fetch -q --depth 1 origin "$ref"
+  git -C "$destination" checkout -q --detach FETCH_HEAD
+}
+
+assert_repo_ref() {
+  local repository="$1" expected="$2" actual
+  actual="$(git -C "$repository" rev-parse HEAD)"
+  [[ "$actual" == "$expected" ]] || {
+    echo "Pinned ref mismatch in ${repository}: expected ${expected}, got ${actual}" >&2
+    exit 1
+  }
+}
+
+clone_at https://github.com/immortalwrt/immortalwrt.git "$IMMORTALWRT_REF" "$SOURCE_DIR"
+assert_repo_ref "$SOURCE_DIR" "$IMMORTALWRT_REF"
+readonly immortalwrt_ref="$IMMORTALWRT_REF"
 
 cd "$SOURCE_DIR"
 {
@@ -37,6 +62,18 @@ cd "$SOURCE_DIR"
 } > feeds.conf
 ./scripts/feeds update -a
 ./scripts/feeds install -a
+
+for feed_spec in \
+  "feeds/packages:$IMMORTALWRT_PACKAGES_REF" \
+  "feeds/luci:$IMMORTALWRT_LUCI_REF" \
+  "feeds/passwall_packages:$PASSWALL_PACKAGES_REF" \
+  "feeds/passwall_luci:$PASSWALL_LUCI_REF"; do
+  feed_dir="${feed_spec%%:*}"
+  feed_ref="${feed_spec#*:}"
+  git -C "$feed_dir" fetch -q --depth 1 origin "$feed_ref"
+  git -C "$feed_dir" checkout -q --detach FETCH_HEAD
+  assert_repo_ref "$feed_dir" "$feed_ref"
+done
 
 # The rolling packages feed may enable Rust's CI LLVM download. Those
 # artifacts are routinely garbage-collected, which makes reproducible builds
@@ -49,21 +86,26 @@ if [[ -f "$rust_makefile" ]]; then
     "$rust_makefile"
 fi
 
-readonly passwall_packages_ref="$(git -C feeds/passwall_packages rev-parse HEAD)"
-readonly passwall_ref="$(git -C feeds/passwall_luci rev-parse HEAD)"
+assert_repo_ref feeds/passwall_packages "$PASSWALL_PACKAGES_REF"
+assert_repo_ref feeds/passwall_luci "$PASSWALL_LUCI_REF"
+readonly passwall_packages_ref="$PASSWALL_PACKAGES_REF"
+readonly passwall_ref="$PASSWALL_LUCI_REF"
 
-git clone --depth 1 https://github.com/vernesong/OpenClash.git package/OpenClash
-readonly openclash_ref="$(git -C package/OpenClash rev-parse HEAD)"
+clone_at https://github.com/vernesong/OpenClash.git "$OPENCLASH_REF" package/OpenClash
+assert_repo_ref package/OpenClash "$OPENCLASH_REF"
+readonly openclash_ref="$OPENCLASH_REF"
 mv package/OpenClash/luci-app-openclash package/luci-app-openclash
 rm -rf package/OpenClash
 
-git clone --depth 1 https://github.com/EasyTier/luci-app-easytier.git package/easytier-openwrt
-readonly easytier_openwrt_ref="$(git -C package/easytier-openwrt rev-parse HEAD)"
+clone_at https://github.com/EasyTier/luci-app-easytier.git "$EASYTIER_OPENWRT_REF" package/easytier-openwrt
+assert_repo_ref package/easytier-openwrt "$EASYTIER_OPENWRT_REF"
+readonly easytier_openwrt_ref="$EASYTIER_OPENWRT_REF"
 readonly easytier_version="$(sed -n 's/^EASYTIER_VERSION=//p' package/easytier-openwrt/version.mk)"
 readonly easytier_asset="easytier-linux-aarch64-v${easytier_version}.zip"
 
-git clone --depth 1 https://github.com/ophub/luci-app-amlogic.git package/luci-app-amlogic
-readonly amlogic_ref="$(git -C package/luci-app-amlogic rev-parse HEAD)"
+clone_at https://github.com/ophub/luci-app-amlogic.git "$AMLOGIC_REF" package/luci-app-amlogic
+assert_repo_ref package/luci-app-amlogic "$AMLOGIC_REF"
+readonly amlogic_ref="$AMLOGIC_REF"
 
 curl_args=(
   --fail --silent --show-error --location
@@ -177,11 +219,29 @@ if (( ${#rootfs_files[@]} == 0 )); then
   echo "No armsr/armv8 rootfs archive was produced" >&2
   exit 1
 fi
-cp "${rootfs_files[@]}" "$ARTIFACT_DIR/"
+rootfs_archive="${rootfs_files[0]}"
+archive_has() {
+  tar -tzf "$rootfs_archive" | grep -Eq "(^|/)${1}$"
+}
+required_rootfs_paths=(
+  lib/netifd/wireless/mac80211.sh
+  lib/firmware/brcm/brcmfmac43455-sdio.bin
+  lib/firmware/brcm/brcmfmac43455-sdio.clm_blob
+  usr/share/passwall/clash_subconverter.lua
+)
+for required_path in "${required_rootfs_paths[@]}"; do
+  archive_has "$required_path" || {
+    echo "Required N1 rootfs path is missing: ${required_path}" >&2
+    exit 1
+  }
+done
+cp "$rootfs_archive" "$ARTIFACT_DIR/"
 
 cat > "$ARTIFACT_DIR/BUILD_INFO.txt" <<EOF
 ImmortalWrt branch=${IMMORTALWRT_BRANCH}
 ImmortalWrt=${immortalwrt_ref}
+ImmortalWrt packages=${IMMORTALWRT_PACKAGES_REF}
+ImmortalWrt LuCI=${IMMORTALWRT_LUCI_REF}
 PassWall packages=${passwall_packages_ref}
 PassWall LuCI=${passwall_ref}
 OpenClash=${openclash_ref}
