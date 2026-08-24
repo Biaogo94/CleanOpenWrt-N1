@@ -38,6 +38,17 @@ cd "$SOURCE_DIR"
 ./scripts/feeds update -a
 ./scripts/feeds install -a
 
+# The rolling packages feed may enable Rust's CI LLVM download. Those
+# artifacts are routinely garbage-collected, which makes reproducible builds
+# fail with a 404. Build LLVM locally instead.
+rust_makefile="${SOURCE_DIR}/feeds/packages/lang/rust/Makefile"
+if [[ -f "$rust_makefile" ]]; then
+  sed -i \
+    -e 's/--set=llvm\.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/g' \
+    -e 's/--set=llvm\.download-ci-llvm=1/--set=llvm.download-ci-llvm=false/g' \
+    "$rust_makefile"
+fi
+
 readonly passwall_packages_ref="$(git -C feeds/passwall_packages rev-parse HEAD)"
 readonly passwall_ref="$(git -C feeds/passwall_luci rev-parse HEAD)"
 
