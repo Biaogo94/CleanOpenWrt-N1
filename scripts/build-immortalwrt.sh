@@ -34,10 +34,10 @@ rm -rf "$SOURCE_DIR" "$ARTIFACT_DIR"
 mkdir -p "$(dirname "$SOURCE_DIR")" "$CACHE_DIR/dl" "$CCACHE_DIR" "$ARTIFACT_DIR"
 
 clone_at() {
-  local repo="$1" ref="$2" destination="$3"
-  git init -q "$destination"
-  git -C "$destination" remote add origin "$repo"
-  git -C "$destination" fetch -q --depth 1 origin "$ref"
+  local repo="$1" branch="$2" ref="$3" destination="$4"
+  echo "Cloning ${repo} branch ${branch} at ${ref}"
+  git clone --depth 1 --single-branch --branch "$branch" "$repo" "$destination"
+  timeout 900 git -C "$destination" fetch --depth 1 origin "$ref"
   git -C "$destination" checkout -q --detach FETCH_HEAD
 }
 
@@ -50,7 +50,7 @@ assert_repo_ref() {
   }
 }
 
-clone_at https://github.com/immortalwrt/immortalwrt.git "$IMMORTALWRT_REF" "$SOURCE_DIR"
+clone_at https://github.com/immortalwrt/immortalwrt.git "$IMMORTALWRT_BRANCH" "$IMMORTALWRT_REF" "$SOURCE_DIR"
 assert_repo_ref "$SOURCE_DIR" "$IMMORTALWRT_REF"
 readonly immortalwrt_ref="$IMMORTALWRT_REF"
 
@@ -70,7 +70,8 @@ for feed_spec in \
   "feeds/passwall_luci:$PASSWALL_LUCI_REF"; do
   feed_dir="${feed_spec%%:*}"
   feed_ref="${feed_spec#*:}"
-  git -C "$feed_dir" fetch -q --depth 1 origin "$feed_ref"
+  echo "Pinning ${feed_dir} at ${feed_ref}"
+  timeout 900 git -C "$feed_dir" fetch --depth 1 origin "$feed_ref"
   git -C "$feed_dir" checkout -q --detach FETCH_HEAD
   assert_repo_ref "$feed_dir" "$feed_ref"
 done
@@ -91,19 +92,19 @@ assert_repo_ref feeds/passwall_luci "$PASSWALL_LUCI_REF"
 readonly passwall_packages_ref="$PASSWALL_PACKAGES_REF"
 readonly passwall_ref="$PASSWALL_LUCI_REF"
 
-clone_at https://github.com/vernesong/OpenClash.git "$OPENCLASH_REF" package/OpenClash
+clone_at https://github.com/vernesong/OpenClash.git master "$OPENCLASH_REF" package/OpenClash
 assert_repo_ref package/OpenClash "$OPENCLASH_REF"
 readonly openclash_ref="$OPENCLASH_REF"
 mv package/OpenClash/luci-app-openclash package/luci-app-openclash
 rm -rf package/OpenClash
 
-clone_at https://github.com/EasyTier/luci-app-easytier.git "$EASYTIER_OPENWRT_REF" package/easytier-openwrt
+clone_at https://github.com/EasyTier/luci-app-easytier.git main "$EASYTIER_OPENWRT_REF" package/easytier-openwrt
 assert_repo_ref package/easytier-openwrt "$EASYTIER_OPENWRT_REF"
 readonly easytier_openwrt_ref="$EASYTIER_OPENWRT_REF"
 readonly easytier_version="$(sed -n 's/^EASYTIER_VERSION=//p' package/easytier-openwrt/version.mk)"
 readonly easytier_asset="easytier-linux-aarch64-v${easytier_version}.zip"
 
-clone_at https://github.com/ophub/luci-app-amlogic.git "$AMLOGIC_REF" package/luci-app-amlogic
+clone_at https://github.com/ophub/luci-app-amlogic.git main "$AMLOGIC_REF" package/luci-app-amlogic
 assert_repo_ref package/luci-app-amlogic "$AMLOGIC_REF"
 readonly amlogic_ref="$AMLOGIC_REF"
 
