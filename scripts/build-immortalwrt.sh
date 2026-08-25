@@ -6,7 +6,7 @@ readonly SOURCE_DIR="${SOURCE_DIR:-${WORKSPACE}/.build/immortalwrt}"
 readonly CACHE_DIR="${CACHE_DIR:-/cache}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:-${WORKSPACE}/artifacts/rootfs}"
 readonly IMMORTALWRT_BRANCH="${IMMORTALWRT_BRANCH:-openwrt-25.12}"
-readonly IMMORTALWRT_REF="${IMMORTALWRT_REF:-3a0e732472ba6b0476bd974a01cdb7930e13f7fe}"
+readonly IMMORTALWRT_REF="${IMMORTALWRT_REF:-7020e88fd2fdb67f6d934a97f1c136c5dc81e1f3}"
 readonly IMMORTALWRT_PACKAGES_REF="${IMMORTALWRT_PACKAGES_REF:-a874f8aabbf21af382a6bab90d300e50ebccadb0}"
 readonly IMMORTALWRT_LUCI_REF="${IMMORTALWRT_LUCI_REF:-5eb439f0f87e125cf0c2ffcbecffa79e4c7c441b}"
 readonly PASSWALL_PACKAGES_REF="${PASSWALL_PACKAGES_REF:-f7f253de5d10f4aefa170c4006be926796c88d10}"
@@ -61,7 +61,6 @@ cd "$SOURCE_DIR"
   cat feeds.conf.default
 } > feeds.conf
 ./scripts/feeds update -a
-./scripts/feeds install -a
 
 for feed_spec in \
   "feeds/packages:$IMMORTALWRT_PACKAGES_REF" \
@@ -75,6 +74,8 @@ for feed_spec in \
   git -C "$feed_dir" checkout -q --detach FETCH_HEAD
   assert_repo_ref "$feed_dir" "$feed_ref"
 done
+
+./scripts/feeds install -a
 
 # The rolling packages feed may enable Rust's CI LLVM download. Those
 # artifacts are routinely garbage-collected, which makes reproducible builds
