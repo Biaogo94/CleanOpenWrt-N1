@@ -17,6 +17,11 @@ on:
         required: false
         default: ""
         type: string
+      rootfs_url:
+        description: Download a compatible rootfs archive from this URL (overrides rootfs_run_id)
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -34,7 +39,7 @@ concurrency:
 jobs:
   build:
     name: Build rootfs in GHCR environment
-    if: ${{ inputs.rootfs_run_id == '' }}
+    if: ${{ inputs.rootfs_run_id == '' && inputs.rootfs_url == '' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 330
     permissions:
@@ -141,12 +146,24 @@ jobs:
 
     steps:
       - name: Download rootfs artifact
+        if: ${{ inputs.rootfs_url == '' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: immortalwrt-rootfs-${{ inputs.rootfs_run_id || github.run_id }}
           path: openwrt-armsr
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.rootfs_run_id || github.run_id }}
+
+      - name: Download rootfs archive
+        if: ${{ inputs.rootfs_url != '' }}
+        env:
+          ROOTFS_URL: ${{ inputs.rootfs_url }}
+        run: |
+          mkdir -p openwrt-armsr
+          curl --fail --location --retry 3 --connect-timeout 15 \
+            "$ROOTFS_URL" \
+            --output openwrt-armsr/rootfs.tar.gz
+          test -s openwrt-armsr/rootfs.tar.gz
 
       - name: Package Phicomm N1 image
         uses: ophub/amlogic-s9xxx-openwrt@34c28d7d3161c8e4b791b91626f4b76353fb3759
