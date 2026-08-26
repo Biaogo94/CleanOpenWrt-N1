@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+readonly REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly LOCK_FILE="${REPO_DIR}/build-lock.env"
+[[ -f "$LOCK_FILE" ]] || { echo "Missing build lock: ${LOCK_FILE}" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$LOCK_FILE"
+[[ "${LOCK_SCHEMA:-}" == "1" ]] || { echo "Unsupported build lock schema" >&2; exit 1; }
+
 readonly WORKSPACE="${WORKSPACE:-/workspace}"
 readonly SOURCE_DIR="${SOURCE_DIR:-${WORKSPACE}/.build/immortalwrt}"
 readonly CACHE_DIR="${CACHE_DIR:-/cache}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:-${WORKSPACE}/artifacts/rootfs}"
-readonly IMMORTALWRT_BRANCH="${IMMORTALWRT_BRANCH:-openwrt-25.12}"
-readonly IMMORTALWRT_REF="${IMMORTALWRT_REF:-7020e88fd2fdb67f6d934a97f1c136c5dc81e1f3}"
-readonly IMMORTALWRT_PACKAGES_REF="${IMMORTALWRT_PACKAGES_REF:-a874f8aabbf21af382a6bab90d300e50ebccadb0}"
-readonly IMMORTALWRT_LUCI_REF="${IMMORTALWRT_LUCI_REF:-5eb439f0f87e125cf0c2ffcbecffa79e4c7c441b}"
-readonly PASSWALL_PACKAGES_REF="${PASSWALL_PACKAGES_REF:-f7f253de5d10f4aefa170c4006be926796c88d10}"
-readonly PASSWALL_LUCI_REF="${PASSWALL_LUCI_REF:-cfab375650b69b79c52da681a713eaac2dd7bc73}"
-readonly OPENCLASH_REF="${OPENCLASH_REF:-c3a33c1d3407956fdf8f0e0b7c1a4c52e6ad9593}"
-readonly EASYTIER_OPENWRT_REF="${EASYTIER_OPENWRT_REF:-5a6040b44bcc516c85e9eb3f79e2ddeb8830bcf1}"
-readonly AMLOGIC_REF="${AMLOGIC_REF:-8fe2b60b4d63e2d83fbe5eb12c37c77a892c0117}"
+readonly IMMORTALWRT_BRANCH="$LOCK_IMMORTALWRT_BRANCH"
+readonly IMMORTALWRT_REF="$LOCK_IMMORTALWRT_REF"
+readonly IMMORTALWRT_PACKAGES_REF="$LOCK_IMMORTALWRT_PACKAGES_REF"
+readonly IMMORTALWRT_LUCI_REF="$LOCK_IMMORTALWRT_LUCI_REF"
+readonly PASSWALL_PACKAGES_REF="$LOCK_PASSWALL_PACKAGES_REF"
+readonly PASSWALL_LUCI_REF="$LOCK_PASSWALL_LUCI_REF"
+readonly OPENCLASH_REF="$LOCK_OPENCLASH_REF"
+readonly EASYTIER_OPENWRT_REF="$LOCK_EASYTIER_OPENWRT_REF"
+readonly AMLOGIC_REF="$LOCK_AMLOGIC_REF"
 
 export CCACHE_DIR="${CCACHE_DIR:-${CACHE_DIR}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-3G}"
@@ -251,6 +258,9 @@ EasyTier OpenWrt=${easytier_openwrt_ref}
 EasyTier version=${easytier_version}
 EasyTier aarch64 SHA256=${easytier_sha256}
 Amlogic Treasure Box=${amlogic_ref}
+Build lock SHA256=$(sha256sum "$LOCK_FILE" | awk '{print $1}')
+Kernel series=${LOCK_KERNEL_SERIES}
+Kernel version=${LOCK_KERNEL_VERSION}
 Builder image=${BUILDER_IMAGE:-unknown}
 Builder digest=${BUILDER_IMAGE_DIGEST:-unknown}
 EOF

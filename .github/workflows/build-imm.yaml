@@ -1,6 +1,6 @@
 name: Build ImmortalWrt for Phicomm N1
 
-run-name: N1 / kernel ${{ inputs.kernel_series }} / run ${{ github.run_number }}
+run-name: N1 / locked kernel ${{ inputs.kernel_series }} / run ${{ github.run_number }}
 
 on:
   workflow_dispatch:
@@ -11,9 +11,7 @@ on:
         default: "6.12"
         type: choice
         options:
-          - "6.1"
           - "6.12"
-          - "6.18"
       rootfs_run_id:
         description: Reuse rootfs artifact from this run ID (leave empty for a full build)
         required: false
@@ -25,7 +23,9 @@ permissions: {}
 env:
   TZ: Asia/Shanghai
   IMMORTALWRT_BRANCH: openwrt-25.12
-  BUILDER_IMAGE: ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
+  N1_KERNEL_SERIES: 6.12
+  N1_KERNEL_VERSION: 6.12.103
+  BUILDER_IMAGE: ghcr.io/biaogo94/cleanopenwrt-n1-builder@sha256:00ad00c673d9135d4653234c65e0a755bea7343344157ef1656a546431394efc
 
 concurrency:
   group: immortalwrt-n1-${{ inputs.kernel_series }}
@@ -77,10 +77,18 @@ jobs:
           path: |
             .cache/dl
             .cache/ccache
-          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-${{ github.run_id }}
+          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
           restore-keys: |
-            n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-
+            n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-
             n1-immortalwrt-${{ runner.os }}-
+
+      - name: Verify compatibility lock
+        run: |
+          test "${{ inputs.kernel_series }}" = "$N1_KERNEL_SERIES"
+          test -f build-lock.env
+          grep -qx 'LOCK_SCHEMA=1' build-lock.env
+          test "$(sed -n 's/^LOCK_KERNEL_VERSION=//p' build-lock.env)" = "$N1_KERNEL_VERSION"
+          test "$(sed -n 's/^LOCK_BUILDER_DIGEST=//p' build-lock.env)" = "${BUILDER_IMAGE##*@}"
 
       - name: Build ImmortalWrt rootfs
         env:
@@ -111,7 +119,7 @@ jobs:
           path: |
             .cache/dl
             .cache/ccache
-          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh') }}-${{ github.run_id }}
+          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
 
       - name: Upload rootfs artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -146,8 +154,8 @@ jobs:
           openwrt_files: n1-overlay
           openwrt_path: openwrt-armsr/*rootfs.tar.gz
           openwrt_board: s905d
-          openwrt_kernel: ${{ inputs.kernel_series }}
-          auto_kernel: "true"
+          openwrt_kernel: ${{ env.N1_KERNEL_VERSION }}
+          auto_kernel: "false"
           kernel_repo: ophub/kernel
           openwrt_size: 256/1024
 

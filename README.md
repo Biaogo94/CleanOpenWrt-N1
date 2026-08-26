@@ -110,6 +110,11 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 它还会修复 PassWall 离线订阅的空 HTTP headers 异常，并关闭 HAProxy 包自带的
 81/444/60000 示例监听；PassWall 自己生成的 HAProxy 配置不受影响。
 
+构建依赖统一锁定在 `build-lock.env`。该锁文件包含 ImmortalWrt、feeds、PassWall、
+OpenClash、EasyTier、Amlogic、Builder 镜像和 N1 内核版本。更新其中任意一项前，
+应先完成一轮完整 rootfs 与 N1 镜像构建验证；工作流不会自动跟随上游最新提交。
+当前锁定的内核为已验证的 `6.12.103`。
+
 ## 致谢
 
 - [ImmortalWrt](https://github.com/immortalwrt/immortalwrt)
