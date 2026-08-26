@@ -230,7 +230,9 @@ if (( ${#rootfs_files[@]} == 0 )); then
 fi
 rootfs_archive="${rootfs_files[0]}"
 archive_has() {
-  tar -tzf "$rootfs_archive" | grep -Eq "(^|/)${1}$"
+  tar -tzf "$rootfs_archive" \
+    | sed 's#^\./##' \
+    | grep -Fqx "$1"
 }
 required_rootfs_paths=(
   lib/netifd/wireless/mac80211.sh
