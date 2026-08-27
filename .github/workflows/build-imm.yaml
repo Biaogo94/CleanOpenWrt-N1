@@ -183,6 +183,7 @@ jobs:
           test -f n1-overlay/etc/uci-defaults/92-disable-haproxy-example
           test -n "${PACKAGED_OUTPUTPATH:-}"
           test -d "$PACKAGED_OUTPUTPATH"
+          sudo chown -R "$(id -u):$(id -g)" "$PACKAGED_OUTPUTPATH"
           cp openwrt-armsr/BUILD_INFO.txt "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           actual_kernels="$({
             find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' -printf '%f\n'
