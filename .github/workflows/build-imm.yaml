@@ -184,7 +184,14 @@ jobs:
           test -n "${PACKAGED_OUTPUTPATH:-}"
           test -d "$PACKAGED_OUTPUTPATH"
           sudo chown -R "$(id -u):$(id -g)" "$PACKAGED_OUTPUTPATH"
-          cp openwrt-armsr/BUILD_INFO.txt "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
+          if [ -f openwrt-armsr/BUILD_INFO.txt ]; then
+            cp openwrt-armsr/BUILD_INFO.txt "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
+          else
+            printf '%s\n' \
+              "Rootfs source=${{ inputs.rootfs_url || 'workflow artifact' }}" \
+              "Rootfs metadata=not supplied by source archive" \
+              > "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
+          fi
           image_count="$(find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' | wc -l)"
           test "$image_count" -ge 1
           actual_kernels="$N1_KERNEL_VERSION"
