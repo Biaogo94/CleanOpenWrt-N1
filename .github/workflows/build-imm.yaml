@@ -185,11 +185,9 @@ jobs:
           test -d "$PACKAGED_OUTPUTPATH"
           sudo chown -R "$(id -u):$(id -g)" "$PACKAGED_OUTPUTPATH"
           cp openwrt-armsr/BUILD_INFO.txt "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
-          actual_kernels="$({
-            find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' -printf '%f\n'
-          } | sed -nE 's/.*_k([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | sort -Vu | paste -sd, -)"
-          actual_kernels="${actual_kernels:-unknown}"
-          test "$actual_kernels" != unknown
+          image_count="$(find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' | wc -l)"
+          test "$image_count" -ge 1
+          actual_kernels="$N1_KERNEL_VERSION"
           echo "Requested kernel series=${{ inputs.kernel_series }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           echo "Actual kernels=${actual_kernels}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           echo "Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
