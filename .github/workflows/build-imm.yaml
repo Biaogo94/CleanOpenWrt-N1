@@ -34,7 +34,7 @@ jobs:
       contents: read
     outputs:
       kernel_series: ${{ steps.rootfs.outputs.kernel_series }}
-      kernel_version: ${{ steps.rootfs.outputs.kernel_version }}
+      kernel_version: ${{ steps.metadata.outputs.kernel_version }}
 
     steps:
       - name: Check out repository
@@ -49,32 +49,47 @@ jobs:
           set -euo pipefail
           . ./build-lock.env
           . ./rootfs-lock.env
-          test "$LOCK_SCHEMA" = 1
-          test "$ROOTFS_LOCK_SCHEMA" = 1
+          test "$LOCK_SCHEMA" = 2
+          test "$ROOTFS_LOCK_SCHEMA" = 2
           if [ -n "$INPUT_ROOTFS_URL" ]; then
             test -n "$INPUT_ROOTFS_SHA256"
             rootfs_url="$INPUT_ROOTFS_URL"
             rootfs_sha256="$INPUT_ROOTFS_SHA256"
+            rootfs_sha256_url=""
           else
             rootfs_url="$ROOTFS_URL"
-            rootfs_sha256="$ROOTFS_SHA256"
+            rootfs_sha256=""
+            rootfs_sha256_url="$ROOTFS_SHA256_URL"
           fi
-          echo "$rootfs_sha256" | grep -Eq '^[0-9a-fA-F]{64}$'
+          if [ -n "$rootfs_sha256" ]; then
+            echo "$rootfs_sha256" | grep -Eq '^[0-9a-fA-F]{64}$'
+          fi
           echo "url=$rootfs_url" >> "$GITHUB_OUTPUT"
           echo "sha256=${rootfs_sha256,,}" >> "$GITHUB_OUTPUT"
+          echo "sha256_url=$rootfs_sha256_url" >> "$GITHUB_OUTPUT"
           echo "kernel_series=$LOCK_KERNEL_SERIES" >> "$GITHUB_OUTPUT"
-          echo "kernel_version=$LOCK_KERNEL_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download and verify rootfs
+        id: download
         env:
           ROOTFS_URL: ${{ steps.rootfs.outputs.url }}
           ROOTFS_SHA256: ${{ steps.rootfs.outputs.sha256 }}
+          ROOTFS_SHA256_URL: ${{ steps.rootfs.outputs.sha256_url }}
         run: |
+          set -euo pipefail
           mkdir -p openwrt-armsr
           curl --fail --location --retry 3 --connect-timeout 15 \
             "$ROOTFS_URL" \
             --output openwrt-armsr/rootfs.tar.gz
+          if [ -z "$ROOTFS_SHA256" ]; then
+            curl --fail --location --retry 3 --connect-timeout 15 \
+              "$ROOTFS_SHA256_URL" \
+              --output openwrt-armsr/SHA256SUMS
+            ROOTFS_SHA256="$(awk '$2 == "rootfs.tar.gz" || $2 ~ /rootfs\.tar\.gz$/ { print $1; exit }' openwrt-armsr/SHA256SUMS)"
+          fi
+          echo "$ROOTFS_SHA256" | grep -Eq '^[0-9a-fA-F]{64}$'
           echo "$ROOTFS_SHA256  openwrt-armsr/rootfs.tar.gz" | sha256sum -c -
+          echo "sha256=${ROOTFS_SHA256,,}" >> "$GITHUB_OUTPUT"
 
       - name: Package Phicomm N1 image
         uses: ophub/amlogic-s9xxx-openwrt@34c28d7d3161c8e4b791b91626f4b76353fb3759
@@ -82,17 +97,17 @@ jobs:
           openwrt_files: n1-overlay
           openwrt_path: openwrt-armsr/rootfs.tar.gz
           openwrt_board: s905d
-          openwrt_kernel: ${{ steps.rootfs.outputs.kernel_version }}
-          auto_kernel: "false"
+          openwrt_kernel: ${{ steps.rootfs.outputs.kernel_series }}
+          auto_kernel: "true"
           kernel_repo: ophub/kernel
           openwrt_size: 256/1024
 
       - name: Prepare packaged artifact
+        id: metadata
         env:
           ROOTFS_URL: ${{ steps.rootfs.outputs.url }}
-          ROOTFS_SHA256: ${{ steps.rootfs.outputs.sha256 }}
+          ROOTFS_SHA256: ${{ steps.download.outputs.sha256 }}
           KERNEL_SERIES: ${{ steps.rootfs.outputs.kernel_series }}
-          KERNEL_VERSION: ${{ steps.rootfs.outputs.kernel_version }}
         run: |
           set -euo pipefail
           test -f n1-overlay/etc/uci-defaults/90-n1-wireless-fix
@@ -101,13 +116,15 @@ jobs:
           test -n "${PACKAGED_OUTPUTPATH:-}"
           test -d "$PACKAGED_OUTPUTPATH"
           sudo chown -R "$(id -u):$(id -g)" "$PACKAGED_OUTPUTPATH"
-          image_count="$(find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' | wc -l)"
-          test "$image_count" -ge 1
+          image_file="$(find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' -print -quit)"
+          test -n "$image_file"
+          kernel_version="$(basename "$image_file" | sed -nE 's/.*_k([0-9]+\.[0-9]+\.[0-9]+)_.*/\1/p')"
+          test -n "$kernel_version"
           printf '%s\n' \
             "Rootfs source=$ROOTFS_URL" \
             "Rootfs SHA256=$ROOTFS_SHA256" \
             "Kernel series=$KERNEL_SERIES" \
-            "Actual kernels=$KERNEL_VERSION" \
+            "Actual kernels=$kernel_version" \
             "Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             > "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           (
@@ -116,6 +133,7 @@ jobs:
               | sort -z \
               | xargs -0 -r sha256sum
           ) > "$PACKAGED_OUTPUTPATH/SHA256SUMS"
+          echo "kernel_version=$kernel_version" >> "$GITHUB_OUTPUT"
 
       - name: Upload packaged artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

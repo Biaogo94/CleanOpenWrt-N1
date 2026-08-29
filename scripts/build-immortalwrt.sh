@@ -6,21 +6,26 @@ readonly LOCK_FILE="${REPO_DIR}/build-lock.env"
 [[ -f "$LOCK_FILE" ]] || { echo "Missing build lock: ${LOCK_FILE}" >&2; exit 1; }
 # shellcheck disable=SC1090
 . "$LOCK_FILE"
-[[ "${LOCK_SCHEMA:-}" == "1" ]] || { echo "Unsupported build lock schema" >&2; exit 1; }
+[[ "${LOCK_SCHEMA:-}" == "2" ]] || { echo "Unsupported build lock schema" >&2; exit 1; }
+
+if [[ -z "${IMMORTALWRT_REF:-}" || -z "${SOURCE_SET_ID:-}" ]]; then
+  eval "$(bash "${REPO_DIR}/scripts/resolve-build-refs.sh")"
+fi
 
 readonly WORKSPACE="${WORKSPACE:-/workspace}"
 readonly SOURCE_DIR="${SOURCE_DIR:-${WORKSPACE}/.build/immortalwrt}"
 readonly CACHE_DIR="${CACHE_DIR:-/cache}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:-${WORKSPACE}/artifacts/rootfs}"
 readonly IMMORTALWRT_BRANCH="$LOCK_IMMORTALWRT_BRANCH"
-readonly IMMORTALWRT_REF="$LOCK_IMMORTALWRT_REF"
-readonly IMMORTALWRT_PACKAGES_REF="$LOCK_IMMORTALWRT_PACKAGES_REF"
-readonly IMMORTALWRT_LUCI_REF="$LOCK_IMMORTALWRT_LUCI_REF"
-readonly PASSWALL_PACKAGES_REF="$LOCK_PASSWALL_PACKAGES_REF"
-readonly PASSWALL_LUCI_REF="$LOCK_PASSWALL_LUCI_REF"
-readonly OPENCLASH_REF="$LOCK_OPENCLASH_REF"
-readonly EASYTIER_OPENWRT_REF="$LOCK_EASYTIER_OPENWRT_REF"
-readonly AMLOGIC_REF="$LOCK_AMLOGIC_REF"
+readonly IMMORTALWRT_REF
+readonly IMMORTALWRT_PACKAGES_REF
+readonly IMMORTALWRT_LUCI_REF
+readonly PASSWALL_PACKAGES_REF
+readonly PASSWALL_LUCI_REF
+readonly OPENCLASH_REF
+readonly EASYTIER_OPENWRT_REF
+readonly AMLOGIC_REF
+readonly SOURCE_SET_ID
 
 export CCACHE_DIR="${CCACHE_DIR:-${CACHE_DIR}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-3G}"
@@ -100,19 +105,19 @@ assert_repo_ref feeds/passwall_luci "$PASSWALL_LUCI_REF"
 readonly passwall_packages_ref="$PASSWALL_PACKAGES_REF"
 readonly passwall_ref="$PASSWALL_LUCI_REF"
 
-clone_at https://github.com/vernesong/OpenClash.git master "$OPENCLASH_REF" package/OpenClash
+clone_at https://github.com/vernesong/OpenClash.git "$LOCK_OPENCLASH_BRANCH" "$OPENCLASH_REF" package/OpenClash
 assert_repo_ref package/OpenClash "$OPENCLASH_REF"
 readonly openclash_ref="$OPENCLASH_REF"
 mv package/OpenClash/luci-app-openclash package/luci-app-openclash
 rm -rf package/OpenClash
 
-clone_at https://github.com/EasyTier/luci-app-easytier.git main "$EASYTIER_OPENWRT_REF" package/easytier-openwrt
+clone_at https://github.com/EasyTier/luci-app-easytier.git "$LOCK_EASYTIER_OPENWRT_BRANCH" "$EASYTIER_OPENWRT_REF" package/easytier-openwrt
 assert_repo_ref package/easytier-openwrt "$EASYTIER_OPENWRT_REF"
 readonly easytier_openwrt_ref="$EASYTIER_OPENWRT_REF"
 readonly easytier_version="$(sed -n 's/^EASYTIER_VERSION=//p' package/easytier-openwrt/version.mk)"
 readonly easytier_asset="easytier-linux-aarch64-v${easytier_version}.zip"
 
-clone_at https://github.com/ophub/luci-app-amlogic.git main "$AMLOGIC_REF" package/luci-app-amlogic
+clone_at https://github.com/ophub/luci-app-amlogic.git "$LOCK_AMLOGIC_BRANCH" "$AMLOGIC_REF" package/luci-app-amlogic
 assert_repo_ref package/luci-app-amlogic "$AMLOGIC_REF"
 readonly amlogic_ref="$AMLOGIC_REF"
 
@@ -261,8 +266,8 @@ EasyTier version=${easytier_version}
 EasyTier aarch64 SHA256=${easytier_sha256}
 Amlogic Treasure Box=${amlogic_ref}
 Build lock SHA256=$(sha256sum "$LOCK_FILE" | awk '{print $1}')
+Source set=${SOURCE_SET_ID}
 Kernel series=${LOCK_KERNEL_SERIES}
-Kernel version=${LOCK_KERNEL_VERSION}
 Builder image=${BUILDER_IMAGE:-unknown}
 Builder digest=${BUILDER_IMAGE_DIGEST:-unknown}
 EOF

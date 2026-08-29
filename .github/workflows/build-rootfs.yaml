@@ -1,4 +1,4 @@
-name: Build compatibility-locked ImmortalWrt rootfs
+name: Build latest ImmortalWrt rootfs
 
 run-name: Rootfs / manual run ${{ github.run_number }}
 
@@ -9,7 +9,7 @@ permissions: {}
 
 env:
   TZ: Asia/Shanghai
-  BUILDER_IMAGE: ghcr.io/biaogo94/cleanopenwrt-n1-builder@sha256:00ad00c673d9135d4653234c65e0a755bea7343344157ef1656a546431394efc
+  BUILDER_IMAGE: ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 
 concurrency:
   group: build-n1-rootfs-${{ github.ref }}
@@ -32,12 +32,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull compatibility-locked build environment
+      - name: Pull latest build environment
         id: builder
         run: |
           docker pull "$BUILDER_IMAGE"
           digest="$(docker image inspect "$BUILDER_IMAGE" --format '{{index .RepoDigests 0}}')"
+          cache_id="${digest##*@}"
+          cache_id="${cache_id#sha256:}"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "cache_id=$cache_id" >> "$GITHUB_OUTPUT"
 
       - name: Maximize build space
         uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
@@ -58,29 +61,59 @@ jobs:
         run: |
           set -euo pipefail
           . ./build-lock.env
-          test "$LOCK_SCHEMA" = 1
-          test "$LOCK_BUILDER_IMAGE@$LOCK_BUILDER_DIGEST" = "$BUILDER_IMAGE"
+          test "$LOCK_SCHEMA" = 2
+          test "$LOCK_BUILDER_IMAGE:latest" = "$BUILDER_IMAGE"
 
-      - name: Restore exact-lock downloads and compiler cache
+      - name: Resolve latest upstream revisions
+        id: sources
+        run: |
+          bash scripts/resolve-build-refs.sh | tee resolved-refs.env
+          cat resolved-refs.env >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact-source downloads
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
-          path: |
-            .cache/dl
-            .cache/ccache
-          key: n1-rootfs-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
+          path: .cache/dl
+          key: n1-dl-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ steps.sources.outputs.SOURCE_SET_ID }}-${{ hashFiles('scripts/build-immortalwrt.sh', 'scripts/resolve-build-refs.sh', 'build-lock.env') }}-${{ github.run_id }}
           restore-keys: |
-            n1-rootfs-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-
+            n1-dl-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ steps.sources.outputs.SOURCE_SET_ID }}-${{ hashFiles('scripts/build-immortalwrt.sh', 'scripts/resolve-build-refs.sh', 'build-lock.env') }}-
+
+      - name: Restore compatible compiler cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/ccache
+          key: n1-ccache-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
+          restore-keys: |
+            n1-ccache-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-
 
       - name: Build ImmortalWrt rootfs
         env:
           BUILDER_IMAGE_DIGEST: ${{ steps.builder.outputs.digest }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMMORTALWRT_REF: ${{ steps.sources.outputs.IMMORTALWRT_REF }}
+          IMMORTALWRT_PACKAGES_REF: ${{ steps.sources.outputs.IMMORTALWRT_PACKAGES_REF }}
+          IMMORTALWRT_LUCI_REF: ${{ steps.sources.outputs.IMMORTALWRT_LUCI_REF }}
+          PASSWALL_PACKAGES_REF: ${{ steps.sources.outputs.PASSWALL_PACKAGES_REF }}
+          PASSWALL_LUCI_REF: ${{ steps.sources.outputs.PASSWALL_LUCI_REF }}
+          OPENCLASH_REF: ${{ steps.sources.outputs.OPENCLASH_REF }}
+          EASYTIER_OPENWRT_REF: ${{ steps.sources.outputs.EASYTIER_OPENWRT_REF }}
+          AMLOGIC_REF: ${{ steps.sources.outputs.AMLOGIC_REF }}
+          SOURCE_SET_ID: ${{ steps.sources.outputs.SOURCE_SET_ID }}
         run: |
           mkdir -p .cache/dl .cache/ccache
           docker run --rm \
             --env BUILDER_IMAGE \
             --env BUILDER_IMAGE_DIGEST \
             --env GITHUB_TOKEN \
+            --env IMMORTALWRT_REF \
+            --env IMMORTALWRT_PACKAGES_REF \
+            --env IMMORTALWRT_LUCI_REF \
+            --env PASSWALL_PACKAGES_REF \
+            --env PASSWALL_LUCI_REF \
+            --env OPENCLASH_REF \
+            --env EASYTIER_OPENWRT_REF \
+            --env AMLOGIC_REF \
+            --env SOURCE_SET_ID \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --volume "$GITHUB_WORKSPACE/.cache:/cache" \
             --workdir /workspace \
@@ -92,14 +125,19 @@ jobs:
         run: |
           sudo chown -R "$(id -u):$(id -g)" .cache || true
 
-      - name: Save exact-lock downloads and compiler cache
+      - name: Save exact-source downloads
         if: always()
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
-          path: |
-            .cache/dl
-            .cache/ccache
-          key: n1-rootfs-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
+          path: .cache/dl
+          key: n1-dl-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ steps.sources.outputs.SOURCE_SET_ID }}-${{ hashFiles('scripts/build-immortalwrt.sh', 'scripts/resolve-build-refs.sh', 'build-lock.env') }}-${{ github.run_id }}
+
+      - name: Save compatible compiler cache
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/ccache
+          key: n1-ccache-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
 
       - name: Upload rootfs artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -115,6 +153,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
+      actions: write
       contents: write
 
     steps:
@@ -124,26 +163,46 @@ jobs:
           name: immortalwrt-rootfs-${{ github.run_id }}
           path: rootfs
 
-      - name: Generate checksums
+      - name: Prepare rootfs release
+        id: rootfs
         run: |
           cd rootfs
+          rootfs_file="$(find . -maxdepth 1 -type f -name '*rootfs.tar.gz' -print -quit)"
+          test -n "$rootfs_file"
+          rootfs_name="${rootfs_file#./}"
+          rootfs_sha256="$(sha256sum "$rootfs_name" | awk '{print $1}')"
           find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \
             | sort -z \
             | xargs -0 -r sha256sum \
             > SHA256SUMS
+          echo "name=$rootfs_name" >> "$GITHUB_OUTPUT"
+          echo "sha256=$rootfs_sha256" >> "$GITHUB_OUTPUT"
+          echo "tag=ImmortalWrt-N1-rootfs-r${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Publish rootfs release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          tag_name: ImmortalWrt-N1-rootfs-r${{ github.run_number }}
-          name: Compatibility-locked ImmortalWrt N1 rootfs
+          tag_name: ${{ steps.rootfs.outputs.tag }}
+          name: Latest-branch ImmortalWrt N1 rootfs
           make_latest: false
           fail_on_unmatched_files: true
           files: rootfs/*
           body: |
-            Compatibility-locked ARMv8 rootfs for the N1 packaging workflow.
-
-            This release does not automatically replace the stable rootfs in
-            `build-lock.env`. Promote it only after full N1 packaging and boot tests.
+            ARMv8 rootfs built from the latest configured upstream branch heads.
+            The immutable SHAs and actual Builder digest are recorded in BUILD_INFO.txt.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Queue N1 packaging with the new rootfs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROOTFS_NAME: ${{ steps.rootfs.outputs.name }}
+          ROOTFS_SHA256: ${{ steps.rootfs.outputs.sha256 }}
+          ROOTFS_TAG: ${{ steps.rootfs.outputs.tag }}
+        run: |
+          rootfs_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${ROOTFS_TAG}/${ROOTFS_NAME}"
+          gh workflow run build-imm.yaml \
+            --repo "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}" \
+            -f rootfs_url="$rootfs_url" \
+            -f rootfs_sha256="$ROOTFS_SHA256"

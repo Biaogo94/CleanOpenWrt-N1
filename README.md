@@ -8,8 +8,8 @@
 
 ## 主要功能
 
-- ImmortalWrt `openwrt-25.12` 兼容版本，源码与 feeds 使用提交 SHA 锁定
-- 使用经过验证的 `6.12.103` 内核
+- ImmortalWrt、feeds 和插件在 rootfs 构建开始时自动解析配置分支的最新提交
+- 锁定 `6.12` 内核系列，N1 打包时自动选择该系列最新补丁版
 - PassWall 与简体中文界面
 - OpenClash
 - EasyTier 核心、LuCI 管理界面和简体中文翻译
@@ -25,24 +25,24 @@
 1. 打开仓库的 [Actions](https://github.com/Biaogo94/CleanOpenWrt-N1/actions) 页面。
 2. 选择 `Package Phicomm N1 firmware`。
 3. 点击 `Run workflow`。
-4. 通常保持 rootfs 输入为空，使用 `rootfs-lock.env` 中已验证的 rootfs。
+4. 通常保持 rootfs 输入为空，自动使用最新固件 Release 中的 rootfs 和校验清单。
 5. 打包通常只需数分钟。完成后从 [Releases](https://github.com/Biaogo94/CleanOpenWrt-N1/releases) 下载固件和 `SHA256SUMS`。
 
 快速打包只执行以下阶段：
 
-1. 下载并校验兼容性锁定的 ARMv8 rootfs。
+1. 下载最新固件 Release 中的 ARMv8 rootfs，并用其 `SHA256SUMS` 校验。
 2. 使用 `ophub/amlogic-s9xxx-openwrt` 打包为斐讯 N1 镜像并注入 `n1-overlay`。
 3. 计算校验值并发布 GitHub Release。
 
 ## Rootfs 构建
 
 只有升级 ImmortalWrt、feeds、PassWall 或其他 rootfs 组件时，才手动运行
-`Build compatibility-locked ImmortalWrt rootfs`。该工作流可能需要数小时，并会把
-rootfs 发布为独立、持久的 Release。它不会自动替换快速打包使用的稳定 rootfs。
+`Build latest ImmortalWrt rootfs`。该工作流可能需要数小时，会在开始时解析所有
+上游分支的最新 SHA，并在本次运行中保持不变。
 
-新 rootfs 完整构建成功并通过 N1 打包、启动测试后，再显式更新
-`rootfs-lock.env` 中的 URL 和 SHA256。普通的无线 overlay、打包脚本或 Release
-流程修改不会运行 rootfs 编译。
+新 rootfs 构建成功后会发布独立 Release，并自动触发快速 N1 打包。打包成功后，
+新的固件 Release 会成为后续快速打包的默认 rootfs 来源，无需手动更新 URL 或 digest。
+普通的无线 overlay、打包脚本或 Release 流程修改不会运行 rootfs 编译。
 
 ## 构建环境镜像
 
@@ -52,13 +52,15 @@ rootfs 发布为独立、持久的 Release。它不会自动替换快速打包�
 ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 ```
 
-修改 `Dockerfile`、`.dockerignore` 或镜像工作流后，GitHub Actions 会自动重建并发布镜像。只有独立 rootfs 工作流会拉取该镜像并执行编译；快速打包工作流不使用编译容器。
+修改 `Dockerfile`、`.dockerignore` 或镜像工作流后，GitHub Actions 会自动重建并发布
+`latest` 镜像。独立 rootfs 工作流自动拉取最新 Builder，并把实际 digest 写入构建信息和
+缓存 key；无需手动更新 digest。快速打包工作流不使用编译容器。
 
 ## 内核版本
 
-默认 N1 打包固定使用 `build-lock.env` 中经过验证的 `6.12.103`。升级内核必须作为
-一次兼容性矩阵升级处理，并重新完成打包与启动测试。实际版本会写入固件内的
-`BUILD_INFO.txt`。
+默认 N1 打包锁定 `build-lock.env` 中的 `6.12` 系列，并由 ophub 在该系列中选择最新
+可用补丁版。若要切换到其他大版本，需要修改配置并重新完成打包与启动测试。
+实际版本会写入固件内的 `BUILD_INFO.txt`。
 
 ## 无线中继
 
@@ -77,9 +79,10 @@ ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 
 ## 版本与完整性
 
-ImmortalWrt、feeds、PassWall、OpenClash、EasyTier 和 Amlogic 均由
-`build-lock.env` 固定到具体提交；默认 rootfs 由 `rootfs-lock.env` 固定 URL 与 SHA256。
-上游更新不会自动进入稳定打包流程。
+`build-lock.env` 只固定上游分支和内核大版本。每次 rootfs 构建开始时解析 ImmortalWrt、
+feeds、PassWall、OpenClash、EasyTier 和 Amlogic 的最新 SHA，并在该次运行中冻结。
+默认 rootfs 通过 `rootfs-lock.env` 指向 GitHub 最新固件 Release，校验值从同一 Release
+的 `SHA256SUMS` 动态读取。
 
 每次构建会在 `BUILD_INFO.txt` 中记录：
 
@@ -106,8 +109,8 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 |-- .github/workflows/build-imm.yaml          # 快速 N1 打包和发布
 |-- .github/workflows/build-rootfs.yaml       # 独立、手动的慢速 rootfs 构建
 |-- .github/workflows/build-environment.yml   # GHCR 编译环境发布
-|-- build-lock.env                            # 源码、插件、Builder 与内核兼容矩阵
-|-- rootfs-lock.env                           # 默认稳定 rootfs URL 与 SHA256
+|-- build-lock.env                            # 上游分支、Builder 名称与内核大版本
+|-- rootfs-lock.env                           # 最新 Release rootfs 与校验清单地址
 |-- scripts/build-immortalwrt.sh              # 源码、插件、配置和编译逻辑
 |-- Dockerfile                                # Ubuntu 24.04 编译环境
 `-- .dockerignore
@@ -118,10 +121,9 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 它还会修复 PassWall 离线订阅的空 HTTP headers 异常，并关闭 HAProxy 包自带的
 81/444/60000 示例监听；PassWall 自己生成的 HAProxy 配置不受影响。
 
-构建依赖统一锁定在 `build-lock.env`。该锁文件包含 ImmortalWrt、feeds、PassWall、
-OpenClash、EasyTier、Amlogic、Builder 镜像和 N1 内核版本。更新其中任意一项前，
-应先完成一轮完整 rootfs 与 N1 镜像构建验证；工作流不会自动跟随上游最新提交。
-当前锁定的内核为已验证的 `6.12.103`。
+`build-lock.env` 统一声明上游分支、Builder 镜像名称和 N1 内核大版本。rootfs 工作流
+自动跟随这些分支的最新提交，但会记录实际 SHA、Builder digest 和 source-set ID，确保
+单次构建可追溯；不同 source-set 或 Builder digest 使用不同缓存，避免跨版本污染。
 
 ## 致谢
 
