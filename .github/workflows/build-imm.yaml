@@ -1,24 +1,17 @@
-name: Build ImmortalWrt for Phicomm N1
+name: Package Phicomm N1 firmware
 
-run-name: N1 / locked kernel ${{ inputs.kernel_series }} / run ${{ github.run_number }}
+run-name: N1 package / run ${{ github.run_number }}
 
 on:
   workflow_dispatch:
     inputs:
-      kernel_series:
-        description: Kernel series
-        required: true
-        default: "6.12"
-        type: choice
-        options:
-          - "6.12"
-      rootfs_run_id:
-        description: Reuse rootfs artifact from this run ID (leave empty for a full build)
+      rootfs_url:
+        description: Optional compatible rootfs URL; empty uses build-lock.env
         required: false
         default: ""
         type: string
-      rootfs_url:
-        description: Download a compatible rootfs archive from this URL (overrides rootfs_run_id)
+      rootfs_sha256:
+        description: Required SHA256 when rootfs_url is overridden
         required: false
         default: ""
         type: string
@@ -27,183 +20,101 @@ permissions: {}
 
 env:
   TZ: Asia/Shanghai
-  IMMORTALWRT_BRANCH: openwrt-25.12
-  N1_KERNEL_SERIES: 6.12
-  N1_KERNEL_VERSION: 6.12.103
-  BUILDER_IMAGE: ghcr.io/biaogo94/cleanopenwrt-n1-builder@sha256:00ad00c673d9135d4653234c65e0a755bea7343344157ef1656a546431394efc
 
 concurrency:
-  group: immortalwrt-n1-${{ inputs.kernel_series }}
+  group: package-n1-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build rootfs in GHCR environment
-    if: ${{ inputs.rootfs_run_id == '' && inputs.rootfs_url == '' }}
-    runs-on: ubuntu-22.04
-    timeout-minutes: 330
-    permissions:
-      contents: read
-      packages: read
-
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull online build environment
-        id: builder
-        run: |
-          docker pull "$BUILDER_IMAGE"
-          digest="$(docker image inspect "$BUILDER_IMAGE" --format '{{index .RepoDigests 0}}')"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
-        with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 1024
-          swap-size-mb: 2048
-          remove-dotnet: "true"
-          remove-android: "true"
-          remove-haskell: "true"
-          remove-codeql: "true"
-          remove-docker-images: "false"
-
-      - name: Check out repository on expanded workspace
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      - name: Restore downloads and compiler cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            .cache/dl
-            .cache/ccache
-          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
-          restore-keys: |
-            n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-
-            n1-immortalwrt-${{ runner.os }}-
-
-      - name: Verify compatibility lock
-        run: |
-          test "${{ inputs.kernel_series }}" = "$N1_KERNEL_SERIES"
-          test -f build-lock.env
-          grep -qx 'LOCK_SCHEMA=1' build-lock.env
-          test "$(sed -n 's/^LOCK_KERNEL_VERSION=//p' build-lock.env)" = "$N1_KERNEL_VERSION"
-          test "$(sed -n 's/^LOCK_BUILDER_DIGEST=//p' build-lock.env)" = "${BUILDER_IMAGE##*@}"
-
-      - name: Build ImmortalWrt rootfs
-        env:
-          BUILDER_IMAGE_DIGEST: ${{ steps.builder.outputs.digest }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p .cache/dl .cache/ccache
-          docker run --rm \
-            --env BUILDER_IMAGE \
-            --env BUILDER_IMAGE_DIGEST \
-            --env GITHUB_TOKEN \
-            --env IMMORTALWRT_BRANCH \
-            --volume "$GITHUB_WORKSPACE:/workspace" \
-            --volume "$GITHUB_WORKSPACE/.cache:/cache" \
-            --workdir /workspace \
-            "$BUILDER_IMAGE" \
-            bash scripts/build-immortalwrt.sh
-
-      - name: Fix cache ownership
-        if: always()
-        run: |
-          sudo chown -R "$(id -u):$(id -g)" .cache || true
-
-      - name: Save downloads and compiler cache
-        if: always()
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: |
-            .cache/dl
-            .cache/ccache
-          key: n1-immortalwrt-${{ runner.os }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
-
-      - name: Upload rootfs artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: immortalwrt-rootfs-${{ github.run_id }}
-          path: artifacts/rootfs/
-          if-no-files-found: error
-          retention-days: 7
-
   package:
     name: Package N1 image
-    needs: build
-    if: ${{ always() && !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
-      actions: read
       contents: read
+    outputs:
+      kernel_series: ${{ steps.rootfs.outputs.kernel_series }}
+      kernel_version: ${{ steps.rootfs.outputs.kernel_version }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Download rootfs artifact
-        if: ${{ inputs.rootfs_url == '' }}
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: immortalwrt-rootfs-${{ inputs.rootfs_run_id || github.run_id }}
-          path: openwrt-armsr
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ inputs.rootfs_run_id || github.run_id }}
-
-      - name: Download rootfs archive
-        if: ${{ inputs.rootfs_url != '' }}
+      - name: Resolve compatibility-locked rootfs
+        id: rootfs
         env:
-          ROOTFS_URL: ${{ inputs.rootfs_url }}
+          INPUT_ROOTFS_URL: ${{ inputs.rootfs_url }}
+          INPUT_ROOTFS_SHA256: ${{ inputs.rootfs_sha256 }}
+        run: |
+          set -euo pipefail
+          . ./build-lock.env
+          . ./rootfs-lock.env
+          test "$LOCK_SCHEMA" = 1
+          test "$ROOTFS_LOCK_SCHEMA" = 1
+          if [ -n "$INPUT_ROOTFS_URL" ]; then
+            test -n "$INPUT_ROOTFS_SHA256"
+            rootfs_url="$INPUT_ROOTFS_URL"
+            rootfs_sha256="$INPUT_ROOTFS_SHA256"
+          else
+            rootfs_url="$ROOTFS_URL"
+            rootfs_sha256="$ROOTFS_SHA256"
+          fi
+          echo "$rootfs_sha256" | grep -Eq '^[0-9a-fA-F]{64}$'
+          echo "url=$rootfs_url" >> "$GITHUB_OUTPUT"
+          echo "sha256=${rootfs_sha256,,}" >> "$GITHUB_OUTPUT"
+          echo "kernel_series=$LOCK_KERNEL_SERIES" >> "$GITHUB_OUTPUT"
+          echo "kernel_version=$LOCK_KERNEL_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify rootfs
+        env:
+          ROOTFS_URL: ${{ steps.rootfs.outputs.url }}
+          ROOTFS_SHA256: ${{ steps.rootfs.outputs.sha256 }}
         run: |
           mkdir -p openwrt-armsr
           curl --fail --location --retry 3 --connect-timeout 15 \
             "$ROOTFS_URL" \
             --output openwrt-armsr/rootfs.tar.gz
-          test -s openwrt-armsr/rootfs.tar.gz
+          echo "$ROOTFS_SHA256  openwrt-armsr/rootfs.tar.gz" | sha256sum -c -
 
       - name: Package Phicomm N1 image
         uses: ophub/amlogic-s9xxx-openwrt@34c28d7d3161c8e4b791b91626f4b76353fb3759
         with:
           openwrt_files: n1-overlay
-          openwrt_path: openwrt-armsr/*rootfs.tar.gz
+          openwrt_path: openwrt-armsr/rootfs.tar.gz
           openwrt_board: s905d
-          openwrt_kernel: ${{ env.N1_KERNEL_VERSION }}
+          openwrt_kernel: ${{ steps.rootfs.outputs.kernel_version }}
           auto_kernel: "false"
           kernel_repo: ophub/kernel
           openwrt_size: 256/1024
 
       - name: Prepare packaged artifact
+        env:
+          ROOTFS_URL: ${{ steps.rootfs.outputs.url }}
+          ROOTFS_SHA256: ${{ steps.rootfs.outputs.sha256 }}
+          KERNEL_SERIES: ${{ steps.rootfs.outputs.kernel_series }}
+          KERNEL_VERSION: ${{ steps.rootfs.outputs.kernel_version }}
         run: |
+          set -euo pipefail
           test -f n1-overlay/etc/uci-defaults/90-n1-wireless-fix
           test -f n1-overlay/etc/uci-defaults/91-passwall-local-subscribe-fix
           test -f n1-overlay/etc/uci-defaults/92-disable-haproxy-example
           test -n "${PACKAGED_OUTPUTPATH:-}"
           test -d "$PACKAGED_OUTPUTPATH"
           sudo chown -R "$(id -u):$(id -g)" "$PACKAGED_OUTPUTPATH"
-          if [ -f openwrt-armsr/BUILD_INFO.txt ]; then
-            cp openwrt-armsr/BUILD_INFO.txt "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
-          else
-            printf '%s\n' \
-              "Rootfs source=${{ inputs.rootfs_url || 'workflow artifact' }}" \
-              "Rootfs metadata=not supplied by source archive" \
-              > "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
-          fi
           image_count="$(find "$PACKAGED_OUTPUTPATH" -maxdepth 1 -type f -name '*.img.gz' | wc -l)"
           test "$image_count" -ge 1
-          actual_kernels="$N1_KERNEL_VERSION"
-          echo "Requested kernel series=${{ inputs.kernel_series }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
-          echo "Actual kernels=${actual_kernels}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
-          echo "Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
+          printf '%s\n' \
+            "Rootfs source=$ROOTFS_URL" \
+            "Rootfs SHA256=$ROOTFS_SHA256" \
+            "Kernel series=$KERNEL_SERIES" \
+            "Actual kernels=$KERNEL_VERSION" \
+            "Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            > "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
           (
             cd "$PACKAGED_OUTPUTPATH"
-            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' | sort -z | xargs -0 -r sha256sum
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \
+              | sort -z \
+              | xargs -0 -r sha256sum
           ) > "$PACKAGED_OUTPUTPATH/SHA256SUMS"
 
       - name: Upload packaged artifact
@@ -212,12 +123,11 @@ jobs:
           name: immortalwrt-n1-${{ github.run_id }}
           path: ${{ env.PACKAGED_OUTPUTPATH }}/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
 
   release:
-    name: Publish release
+    name: Publish N1 release
     needs: package
-    if: ${{ always() && !cancelled() && needs.package.result == 'success' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
@@ -230,20 +140,11 @@ jobs:
           name: immortalwrt-n1-${{ github.run_id }}
           path: firmware
 
-      - name: Read release metadata
-        id: metadata
-        run: |
-          actual_kernels="$(sed -n 's/^Actual kernels=//p' firmware/BUILD_INFO.txt | tail -n 1)"
-          easytier_version="$(sed -n 's/^EasyTier version=//p' firmware/BUILD_INFO.txt | tail -n 1)"
-          echo "actual_kernels=${actual_kernels:-unknown}" >> "$GITHUB_OUTPUT"
-          echo "easytier_version=${easytier_version:-unknown}" >> "$GITHUB_OUTPUT"
-          echo "build_date=$(date +'%Y-%m-%d %H:%M %Z')" >> "$GITHUB_OUTPUT"
-
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          tag_name: ImmortalWrt-N1-k${{ inputs.kernel_series }}-r${{ github.run_number }}
-          name: ImmortalWrt Phicomm N1 - kernel ${{ steps.metadata.outputs.actual_kernels }}
+          tag_name: ImmortalWrt-N1-k${{ needs.package.outputs.kernel_series }}-r${{ github.run_number }}
+          name: ImmortalWrt Phicomm N1 - kernel ${{ needs.package.outputs.kernel_version }}
           make_latest: true
           fail_on_unmatched_files: true
           files: firmware/*
@@ -251,11 +152,8 @@ jobs:
             ## Firmware information
 
             - Device: Phicomm N1 (Amlogic S905D)
-            - ImmortalWrt branch: `openwrt-25.12` (latest revision at build time)
-            - Requested kernel series: `${{ inputs.kernel_series }}`
-            - Actual kernel: `${{ steps.metadata.outputs.actual_kernels }}`
-            - EasyTier: `${{ steps.metadata.outputs.easytier_version }}`
-            - Build time: `${{ steps.metadata.outputs.build_date }}`
+            - Kernel: `${{ needs.package.outputs.kernel_version }}`
+            - Rootfs and dependency versions: compatibility-locked by `build-lock.env`
             - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
             Includes PassWall, OpenClash, EasyTier, Amlogic Treasure Box,

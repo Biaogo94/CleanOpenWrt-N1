@@ -1,14 +1,15 @@
 # CleanOpenWrt-N1
 
-[![Build firmware](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-imm.yaml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-imm.yaml)
+[![Package firmware](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-imm.yaml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-imm.yaml)
+[![Build rootfs](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-rootfs.yaml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-rootfs.yaml)
 [![Build environment](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-environment.yml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-environment.yml)
 
 面向斐讯 N1（Amlogic S905D）的 ImmortalWrt 自动构建项目。固件基于 `openwrt-25.12` 稳定分支，使用预构建的 GHCR 在线编译环境，并集成代理、组网和板载无线中继功能。
 
 ## 主要功能
 
-- ImmortalWrt `openwrt-25.12` 分支，构建时获取最新提交
-- 默认使用 6.12 系列内核，同时提供 6.1 和 6.18 选项
+- ImmortalWrt `openwrt-25.12` 兼容版本，源码与 feeds 使用提交 SHA 锁定
+- 使用经过验证的 `6.12.103` 内核
 - PassWall 与简体中文界面
 - OpenClash
 - EasyTier 核心、LuCI 管理界面和简体中文翻译
@@ -19,23 +20,29 @@
 - `dl` 下载缓存和 `ccache` 编译缓存
 - 自动生成 SHA256 校验文件和 GitHub Release
 
-## 在线构建
+## 快速打包
 
 1. 打开仓库的 [Actions](https://github.com/Biaogo94/CleanOpenWrt-N1/actions) 页面。
-2. 选择 `Build ImmortalWrt for Phicomm N1`。
+2. 选择 `Package Phicomm N1 firmware`。
 3. 点击 `Run workflow`。
-4. 选择内核系列，通常建议保持默认的 `6.12`。
-5. 构建完成后，从 [Releases](https://github.com/Biaogo94/CleanOpenWrt-N1/releases) 下载固件和 `SHA256SUMS`。
+4. 通常保持 rootfs 输入为空，使用 `rootfs-lock.env` 中已验证的 rootfs。
+5. 打包通常只需数分钟。完成后从 [Releases](https://github.com/Biaogo94/CleanOpenWrt-N1/releases) 下载固件和 `SHA256SUMS`。
 
-构建分为三个阶段：
+快速打包只执行以下阶段：
 
-1. 在 GHCR 编译环境中生成 ImmortalWrt ARMv8 rootfs。
-2. 使用 `ophub/amlogic-s9xxx-openwrt` 打包为斐讯 N1 镜像。
+1. 下载并校验兼容性锁定的 ARMv8 rootfs。
+2. 使用 `ophub/amlogic-s9xxx-openwrt` 打包为斐讯 N1 镜像并注入 `n1-overlay`。
 3. 计算校验值并发布 GitHub Release。
 
-首次完整编译时间较长。后续构建会复用下载缓存和编译缓存，但源码或软件包发生较大变化时仍可能需要重新编译。
+## Rootfs 构建
 
-如果 rootfs 已成功、只有 N1 镜像打包或 Release 阶段失败，可以重新运行工作流，并在 `rootfs_run_id` 中填写上一次成功生成 rootfs 的 Actions Run ID。工作流会跳过源码编译，直接复用保留期内的 Artifact 完成打包。留空则执行正常的完整构建。
+只有升级 ImmortalWrt、feeds、PassWall 或其他 rootfs 组件时，才手动运行
+`Build compatibility-locked ImmortalWrt rootfs`。该工作流可能需要数小时，并会把
+rootfs 发布为独立、持久的 Release。它不会自动替换快速打包使用的稳定 rootfs。
+
+新 rootfs 完整构建成功并通过 N1 打包、启动测试后，再显式更新
+`rootfs-lock.env` 中的 URL 和 SHA256。普通的无线 overlay、打包脚本或 Release
+流程修改不会运行 rootfs 编译。
 
 ## 构建环境镜像
 
@@ -45,17 +52,13 @@
 ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 ```
 
-修改 `Dockerfile`、`.dockerignore` 或镜像工作流后，GitHub Actions 会自动重建并发布镜像。固件工作流会先拉取该镜像，再扩展工作空间并执行编译。
+修改 `Dockerfile`、`.dockerignore` 或镜像工作流后，GitHub Actions 会自动重建并发布镜像。只有独立 rootfs 工作流会拉取该镜像并执行编译；快速打包工作流不使用编译容器。
 
-## 内核选择
+## 内核版本
 
-| 内核系列 | 建议用途 |
-| --- | --- |
-| `6.12` | 默认推荐，长期支持与硬件兼容性较均衡 |
-| `6.1` | 遇到新内核兼容问题时用于回退测试 |
-| `6.18` | 测试较新的驱动和内核功能，升级前应先从 USB 启动验证 |
-
-工作流选择的是内核系列，打包阶段会从内核仓库获取该系列的可用版本。实际版本会写入固件内的 `BUILD_INFO.txt`。
+默认 N1 打包固定使用 `build-lock.env` 中经过验证的 `6.12.103`。升级内核必须作为
+一次兼容性矩阵升级处理，并重新完成打包与启动测试。实际版本会写入固件内的
+`BUILD_INFO.txt`。
 
 ## 无线中继
 
@@ -74,7 +77,9 @@ ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 
 ## 版本与完整性
 
-ImmortalWrt、PassWall、OpenClash 和 EasyTier OpenWrt 软件包默认跟随各自分支的最新提交，不锁定固定版本。因此，新版本能自动进入后续构建，但不同日期的产物可能不同。
+ImmortalWrt、feeds、PassWall、OpenClash、EasyTier 和 Amlogic 均由
+`build-lock.env` 固定到具体提交；默认 rootfs 由 `rootfs-lock.env` 固定 URL 与 SHA256。
+上游更新不会自动进入稳定打包流程。
 
 每次构建会在 `BUILD_INFO.txt` 中记录：
 
@@ -98,8 +103,11 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 
 ```text
 .
-|-- .github/workflows/build-imm.yaml          # 固件构建、打包和发布
+|-- .github/workflows/build-imm.yaml          # 快速 N1 打包和发布
+|-- .github/workflows/build-rootfs.yaml       # 独立、手动的慢速 rootfs 构建
 |-- .github/workflows/build-environment.yml   # GHCR 编译环境发布
+|-- build-lock.env                            # 源码、插件、Builder 与内核兼容矩阵
+|-- rootfs-lock.env                           # 默认稳定 rootfs URL 与 SHA256
 |-- scripts/build-immortalwrt.sh              # 源码、插件、配置和编译逻辑
 |-- Dockerfile                                # Ubuntu 24.04 编译环境
 `-- .dockerignore
