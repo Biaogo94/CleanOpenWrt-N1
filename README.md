@@ -44,6 +44,10 @@
 新的固件 Release 会成为后续快速打包的默认 rootfs 来源，无需手动更新 URL 或 digest。
 普通的无线 overlay、打包脚本或 Release 流程修改不会运行 rootfs 编译。
 
+构建开始后会检查滚动 `packages` feed 的 Go 默认版本与实际目录是否一致。若上游
+提交暂时缺少对应的 `golang1.x` 目录，脚本只在本次工作树中选择该 feed 可用的最高
+版本，并将实际版本写入 `BUILD_INFO.txt`，避免上游原子提交窗口导致整轮编译失败。
+
 ## 构建环境镜像
 
 编译依赖由仓库根目录的 `Dockerfile` 定义，并发布到：

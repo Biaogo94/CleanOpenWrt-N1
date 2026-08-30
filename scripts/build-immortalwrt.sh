@@ -87,6 +87,12 @@ for feed_spec in \
   assert_repo_ref "$feed_dir" "$feed_ref"
 done
 
+# A rolling packages commit can briefly publish golang-values.mk before the
+# matching golang1.x directory. Normalize that local feed inconsistency so
+# packages using the generic golang/host dependency still build.
+readonly golang_version="$(bash "${REPO_DIR}/scripts/normalize-golang-feed.sh" \
+  "${SOURCE_DIR}/feeds/packages/lang/golang")"
+
 ./scripts/feeds install -a
 
 # The rolling packages feed may enable Rust's CI LLVM download. Those
@@ -267,6 +273,7 @@ EasyTier aarch64 SHA256=${easytier_sha256}
 Amlogic Treasure Box=${amlogic_ref}
 Build lock SHA256=$(sha256sum "$LOCK_FILE" | awk '{print $1}')
 Source set=${SOURCE_SET_ID}
+Go host version=${golang_version}
 Kernel series=${LOCK_KERNEL_SERIES}
 Builder image=${BUILDER_IMAGE:-unknown}
 Builder digest=${BUILDER_IMAGE_DIGEST:-unknown}
