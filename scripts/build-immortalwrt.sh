@@ -95,6 +95,35 @@ readonly golang_version="$(bash "${REPO_DIR}/scripts/normalize-golang-feed.sh" \
 
 ./scripts/feeds install -a
 
+# feeds install exposes package Makefiles through package/feeds symlinks. The
+# generic dummy package includes version metadata relative to that installed
+# path, so patch the exact Makefile consumed by make as well as any copied
+# metadata files. This keeps the fallback effective across feed layouts.
+golang_dummy_makefiles=(
+  "${SOURCE_DIR}/package/feeds/packages/golang/Makefile"
+  "${SOURCE_DIR}/feeds/packages/lang/golang/golang/Makefile"
+)
+existing_dummy_makefiles=()
+for makefile in "${golang_dummy_makefiles[@]}"; do
+  [[ -f "$makefile" ]] && existing_dummy_makefiles+=("$makefile")
+done
+if (( ${#existing_dummy_makefiles[@]} == 0 )); then
+  echo "Unable to locate installed packages/golang dummy Makefile" >&2
+  exit 1
+fi
+for makefile in "${existing_dummy_makefiles[@]}"; do
+  sed -i -E \
+    "s/^HOST_BUILD_DEPENDS:=golang\$\(PKG_VERSION\)\/host$/HOST_BUILD_DEPENDS:=golang${golang_version}\/host/" \
+    "$makefile"
+done
+
+golang_host_dir="${SOURCE_DIR}/feeds/packages/lang/golang/golang${golang_version}"
+[[ -d "$golang_host_dir" ]] || {
+  echo "Selected Go host package is missing: ${golang_host_dir}" >&2
+  exit 1
+}
+echo "Using Go host package golang${golang_version}"
+
 # The rolling packages feed may enable Rust's CI LLVM download. Those
 # artifacts are routinely garbage-collected, which makes reproducible builds
 # fail with a 404. Build LLVM locally instead.

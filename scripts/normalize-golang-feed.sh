@@ -14,13 +14,15 @@ default_version="$(sed -n 's/^GO_DEFAULT_VERSION:=//p' "$values_file" | head -n 
   exit 1
 }
 
-if [[ -d "${golang_dir}/golang${default_version}" ]]; then
+if [[ -f "${golang_dir}/golang${default_version}/Makefile" ]]; then
+  echo "Go feed default ${default_version} is available" >&2
   printf '%s\n' "$default_version"
   exit 0
 fi
 
 available_version="$(
-  find "$golang_dir" -mindepth 1 -maxdepth 1 -type d -name 'golang1.*' -printf '%f\n' \
+  find "$golang_dir" -mindepth 2 -maxdepth 2 -type f -path '*/golang1.*/Makefile' -printf '%h\n' \
+    | xargs -r -n 1 basename \
     | sed 's/^golang//' \
     | sort -V \
     | tail -n 1
