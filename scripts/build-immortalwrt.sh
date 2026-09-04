@@ -87,39 +87,20 @@ for feed_spec in \
   assert_repo_ref "$feed_dir" "$feed_ref"
 done
 
-# A rolling packages commit can briefly publish golang-values.mk before the
-# matching golang1.x directory. Normalize that local feed inconsistency so
-# packages using the generic golang/host dependency still build.
+# The first feeds update clones branch heads and creates indexes for those
+# revisions. Normalize the pinned packages feed, then recreate every index;
+# otherwise feeds install can mix package metadata from one revision with
+# Makefiles from another (for example, install golang1.26 while the pinned
+# feed's generic golang package depends on golang1.27/host).
 readonly golang_version="$(bash "${REPO_DIR}/scripts/normalize-golang-feed.sh" \
   "${SOURCE_DIR}/feeds/packages/lang/golang")"
+./scripts/feeds update -i -a
 
 ./scripts/feeds install -a
 
-# feeds install exposes package Makefiles through package/feeds symlinks. The
-# generic dummy package includes version metadata relative to that installed
-# path, so patch the exact Makefile consumed by make as well as any copied
-# metadata files. This keeps the fallback effective across feed layouts.
-golang_dummy_makefiles=(
-  "${SOURCE_DIR}/package/feeds/packages/golang/Makefile"
-  "${SOURCE_DIR}/feeds/packages/lang/golang/golang/Makefile"
-)
-existing_dummy_makefiles=()
-for makefile in "${golang_dummy_makefiles[@]}"; do
-  [[ -f "$makefile" ]] && existing_dummy_makefiles+=("$makefile")
-done
-if (( ${#existing_dummy_makefiles[@]} == 0 )); then
-  echo "Unable to locate installed packages/golang dummy Makefile" >&2
-  exit 1
-fi
-for makefile in "${existing_dummy_makefiles[@]}"; do
-  sed -i -E \
-    "s/^HOST_BUILD_DEPENDS:=golang\$\(PKG_VERSION\)\/host$/HOST_BUILD_DEPENDS:=golang${golang_version}\/host/" \
-    "$makefile"
-done
-
-golang_host_dir="${SOURCE_DIR}/feeds/packages/lang/golang/golang${golang_version}"
-[[ -d "$golang_host_dir" ]] || {
-  echo "Selected Go host package is missing: ${golang_host_dir}" >&2
+golang_host_makefile="${SOURCE_DIR}/package/feeds/packages/golang${golang_version}/Makefile"
+[[ -f "$golang_host_makefile" ]] || {
+  echo "Installed Go host package is missing: ${golang_host_makefile}" >&2
   exit 1
 }
 echo "Using Go host package golang${golang_version}"
