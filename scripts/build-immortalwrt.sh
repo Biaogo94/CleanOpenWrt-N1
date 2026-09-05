@@ -186,6 +186,9 @@ CONFIG_TARGET_KERNEL_PARTSIZE=64
 CONFIG_TARGET_ROOTFS_PARTSIZE=960
 CONFIG_TARGET_ROOTFS_TARGZ=y
 CONFIG_CCACHE=y
+# Keep the shell wireless script required by the N1 overlay and packer.
+# ImmortalWrt defaults WIFI_SCRIPTS_UCODE to y on newer revisions.
+# CONFIG_WIFI_SCRIPTS_UCODE is not set
 
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-ssl-openssl=y
