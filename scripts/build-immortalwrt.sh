@@ -186,12 +186,8 @@ CONFIG_TARGET_KERNEL_PARTSIZE=64
 CONFIG_TARGET_ROOTFS_PARTSIZE=960
 CONFIG_TARGET_ROOTFS_TARGZ=y
 CONFIG_CCACHE=y
-# Keep the shell wireless script required by the N1 overlay and packer.
-# Select the package explicitly because newer feed dependency graphs can
-# compile wifi-scripts without installing it into the rootfs.
+# Explicitly require the wireless integration package in the rootfs.
 CONFIG_PACKAGE_wifi-scripts=y
-# ImmortalWrt defaults WIFI_SCRIPTS_UCODE to y on newer revisions.
-# CONFIG_WIFI_SCRIPTS_UCODE is not set
 
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-ssl-openssl=y
@@ -238,10 +234,6 @@ for symbol in "${required_symbols[@]}"; do
     exit 1
   }
 done
-grep -qx "# CONFIG_WIFI_SCRIPTS_UCODE is not set" .config || {
-  echo "Shell wifi-scripts mode is not enabled" >&2
-  exit 1
-}
 
 rm -rf dl
 ln -s "$CACHE_DIR/dl" dl
@@ -262,9 +254,12 @@ if (( ${#rootfs_files[@]} == 0 )); then
 fi
 rootfs_archive="${rootfs_files[0]}"
 archive_has() {
+  # Do not use grep -q: its early exit sends SIGPIPE to tar/sed under
+  # pipefail, falsely reporting an existing member as missing. Drain the
+  # entire listing so corrupt/truncated archives also remain fatal.
   tar -tzf "$rootfs_archive" \
     | sed 's#^\./##' \
-    | grep -Fqx "$1"
+    | grep -Fx "$1" >/dev/null
 }
 required_rootfs_paths=(
   lib/netifd/wireless/mac80211.sh

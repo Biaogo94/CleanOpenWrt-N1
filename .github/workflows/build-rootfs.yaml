@@ -1,8 +1,11 @@
+# Long immutable action pins and cache expressions must remain single-line.
+# yamllint disable rule:line-length
+---
 name: Build latest ImmortalWrt rootfs
 
 run-name: Rootfs / manual run ${{ github.run_number }}
 
-on:
+'on':
   workflow_dispatch:
 
 permissions: {}
@@ -56,6 +59,9 @@ jobs:
 
       - name: Check out repository on expanded workspace
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Test archive validation before compiling
+        run: python3 -m unittest discover -s tests -v
 
       - name: Verify compatibility lock
         run: |
