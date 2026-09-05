@@ -187,6 +187,9 @@ CONFIG_TARGET_ROOTFS_PARTSIZE=960
 CONFIG_TARGET_ROOTFS_TARGZ=y
 CONFIG_CCACHE=y
 # Keep the shell wireless script required by the N1 overlay and packer.
+# Select the package explicitly because newer feed dependency graphs can
+# compile wifi-scripts without installing it into the rootfs.
+CONFIG_PACKAGE_wifi-scripts=y
 # ImmortalWrt defaults WIFI_SCRIPTS_UCODE to y on newer revisions.
 # CONFIG_WIFI_SCRIPTS_UCODE is not set
 
@@ -223,6 +226,7 @@ EOF
 make defconfig
 
 required_symbols=(
+  PACKAGE_wifi-scripts
   PACKAGE_luci-app-amlogic
   PACKAGE_luci-app-easytier
   PACKAGE_luci-app-openclash
@@ -234,6 +238,10 @@ for symbol in "${required_symbols[@]}"; do
     exit 1
   }
 done
+grep -qx "# CONFIG_WIFI_SCRIPTS_UCODE is not set" .config || {
+  echo "Shell wifi-scripts mode is not enabled" >&2
+  exit 1
+}
 
 rm -rf dl
 ln -s "$CACHE_DIR/dl" dl
