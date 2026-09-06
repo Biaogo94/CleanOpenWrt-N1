@@ -20,18 +20,5 @@ if [[ -f "${golang_dir}/golang${default_version}/Makefile" ]]; then
   exit 0
 fi
 
-available_version="$(
-  find "$golang_dir" -mindepth 2 -maxdepth 2 -type f -path '*/golang1.*/Makefile' -printf '%h\n' \
-    | xargs -r -n 1 basename \
-    | sed 's/^golang//' \
-    | sort -V \
-    | tail -n 1
-)"
-[[ "$available_version" =~ ^[0-9]+\.[0-9]+$ ]] || {
-  echo "No usable golang1.x package exists below ${golang_dir}" >&2
-  exit 1
-}
-
-echo "Go feed default ${default_version} is unavailable; using ${available_version}" >&2
-sed -i -E "s/^GO_DEFAULT_VERSION:=.*/GO_DEFAULT_VERSION:=${available_version}/" "$values_file"
-printf '%s\n' "$available_version"
+echo "Go feed default ${default_version} is unavailable. Refusing an unverified downgrade; select a coherent source manifest." >&2
+exit 1

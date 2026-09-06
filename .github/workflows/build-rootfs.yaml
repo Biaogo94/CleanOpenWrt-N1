@@ -5,8 +5,18 @@ name: Build latest ImmortalWrt rootfs
 
 run-name: Rootfs / manual run ${{ github.run_number }}
 
-'on':
+"on":
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Full build or source/config preflight only
+        type: choice
+        options: [full, preflight]
+        default: full
+      replay_run_id:
+        description: Optional prior run ID with build-inputs artifact (same project revision required)
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -19,15 +29,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  checks:
+    uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
   build:
+    needs: checks
     name: Build rootfs in GHCR environment
     runs-on: ubuntu-22.04
     timeout-minutes: 330
     permissions:
       contents: read
       packages: read
+      actions: read
 
     steps:
+      - name: Check out build inputs
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Initialize diagnostics
+        run: |
+          mkdir -p artifacts/diagnostics
+          git rev-parse HEAD > artifacts/diagnostics/project-ref.txt
+
+      - name: Download replay manifest
+        if: inputs.replay_run_id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPLAY_RUN: ${{ inputs.replay_run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          [[ "$REPLAY_RUN" =~ ^[0-9]+$ ]]
+          gh run download "$REPLAY_RUN" --repo "$REPOSITORY" --name build-inputs --dir replay
+          python3 scripts/run-stage.py artifacts/diagnostics replay-validate python3 scripts/build_inputs.py validate --manifest replay/build-inputs.json
+          cp replay/build-inputs.json build-inputs.json
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -37,13 +73,43 @@ jobs:
 
       - name: Pull latest build environment
         id: builder
+        env:
+          REPLAY_RUN: ${{ inputs.replay_run_id }}
         run: |
-          docker pull "$BUILDER_IMAGE"
-          digest="$(docker image inspect "$BUILDER_IMAGE" --format '{{index .RepoDigests 0}}')"
+          if [[ -n "$REPLAY_RUN" ]]; then
+            digest="$(python3 -c 'import json; print(json.load(open("build-inputs.json"))["builder"])')"
+            python3 scripts/run-stage.py artifacts/diagnostics builder-pull docker pull "$digest"
+          else
+            python3 scripts/run-stage.py artifacts/diagnostics builder-pull docker pull "$BUILDER_IMAGE"
+            digest="$(docker image inspect "$BUILDER_IMAGE" --format '{{index .RepoDigests 0}}')"
+          fi
           cache_id="${digest##*@}"
           cache_id="${cache_id#sha256:}"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "cache_id=$cache_id" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve or validate immutable inputs
+        id: sources
+        env:
+          BUILDER_DIGEST: ${{ steps.builder.outputs.digest }}
+          REPLAY_RUN: ${{ inputs.replay_run_id }}
+        run: |
+          mkdir -p artifacts/diagnostics
+          if [[ -z "$REPLAY_RUN" ]]; then
+            python3 scripts/run-stage.py artifacts/diagnostics resolve python3 scripts/build_inputs.py resolve --builder "$BUILDER_DIGEST"
+          fi
+          python3 scripts/build_inputs.py env >> "$GITHUB_OUTPUT"
+          cp build-inputs.json artifacts/diagnostics/
+          cp build-inputs.json "$RUNNER_TEMP/n1-build-inputs.json"
+          cp -r artifacts/diagnostics "$RUNNER_TEMP/n1-early-diagnostics"
+
+      - name: Preserve inputs before compilation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-inputs
+          path: build-inputs.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Maximize build space
         uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
@@ -60,23 +126,17 @@ jobs:
       - name: Check out repository on expanded workspace
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Test archive validation before compiling
-        run: python3 -m unittest discover -s tests -v
-
-      - name: Verify compatibility lock
+      - name: Restore validated input manifest on expanded workspace
         run: |
-          set -euo pipefail
-          . ./build-lock.env
-          test "$LOCK_SCHEMA" = 2
-          test "$LOCK_BUILDER_IMAGE:latest" = "$BUILDER_IMAGE"
-
-      - name: Resolve latest upstream revisions
-        id: sources
-        run: |
-          bash scripts/resolve-build-refs.sh | tee resolved-refs.env
-          cat resolved-refs.env >> "$GITHUB_OUTPUT"
+          cp "$RUNNER_TEMP/n1-build-inputs.json" build-inputs.json
+          python3 scripts/build_inputs.py validate
+          mkdir -p artifacts/diagnostics
+          cp -r "$RUNNER_TEMP/n1-early-diagnostics/." artifacts/diagnostics/
+          cp build-inputs.json artifacts/diagnostics/
 
       - name: Restore exact-source downloads
+        id: downloads
+        if: inputs.mode != 'preflight'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/dl
@@ -84,7 +144,19 @@ jobs:
           restore-keys: |
             n1-dl-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ steps.sources.outputs.SOURCE_SET_ID }}-${{ hashFiles('scripts/build-immortalwrt.sh', 'scripts/normalize-golang-feed.sh', 'scripts/resolve-build-refs.sh', 'build-lock.env') }}-
 
+      - name: Restore isolated Go modules
+        id: go_cache
+        if: inputs.mode != 'preflight'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/go-mod
+          key: n1-go-${{ steps.sources.outputs.SOURCE_SET_ID }}-${{ github.run_id }}
+          restore-keys: |
+            n1-go-${{ steps.sources.outputs.SOURCE_SET_ID }}-
+
       - name: Restore compatible compiler cache
+        id: compiler_cache
+        if: inputs.mode != 'preflight'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/ccache
@@ -95,57 +167,60 @@ jobs:
       - name: Build ImmortalWrt rootfs
         env:
           BUILDER_IMAGE_DIGEST: ${{ steps.builder.outputs.digest }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMMORTALWRT_REF: ${{ steps.sources.outputs.IMMORTALWRT_REF }}
-          IMMORTALWRT_PACKAGES_REF: ${{ steps.sources.outputs.IMMORTALWRT_PACKAGES_REF }}
-          IMMORTALWRT_LUCI_REF: ${{ steps.sources.outputs.IMMORTALWRT_LUCI_REF }}
-          PASSWALL_PACKAGES_REF: ${{ steps.sources.outputs.PASSWALL_PACKAGES_REF }}
-          PASSWALL_LUCI_REF: ${{ steps.sources.outputs.PASSWALL_LUCI_REF }}
-          OPENCLASH_REF: ${{ steps.sources.outputs.OPENCLASH_REF }}
-          EASYTIER_OPENWRT_REF: ${{ steps.sources.outputs.EASYTIER_OPENWRT_REF }}
-          AMLOGIC_REF: ${{ steps.sources.outputs.AMLOGIC_REF }}
-          SOURCE_SET_ID: ${{ steps.sources.outputs.SOURCE_SET_ID }}
+          BUILD_MODE: ${{ inputs.mode }}
+          DOWNLOAD_CACHE: ${{ steps.downloads.outputs.cache-matched-key }}
+          COMPILER_CACHE: ${{ steps.compiler_cache.outputs.cache-matched-key }}
+          GO_CACHE: ${{ steps.go_cache.outputs.cache-matched-key }}
         run: |
-          mkdir -p .cache/dl .cache/ccache
-          docker run --rm \
-            --env BUILDER_IMAGE \
-            --env BUILDER_IMAGE_DIGEST \
-            --env GITHUB_TOKEN \
-            --env IMMORTALWRT_REF \
-            --env IMMORTALWRT_PACKAGES_REF \
-            --env IMMORTALWRT_LUCI_REF \
-            --env PASSWALL_PACKAGES_REF \
-            --env PASSWALL_LUCI_REF \
-            --env OPENCLASH_REF \
-            --env EASYTIER_OPENWRT_REF \
-            --env AMLOGIC_REF \
-            --env SOURCE_SET_ID \
+          mkdir -p .cache/dl .cache/ccache .cache/go-mod
+          printf 'downloads=%s\nccache=%s\ngo=%s\n' "$DOWNLOAD_CACHE" "$COMPILER_CACHE" "$GO_CACHE" > artifacts/diagnostics/cache-restore.txt
+          python3 scripts/run-stage.py artifacts/diagnostics build docker run --rm \
+            --env BUILDER_IMAGE --env BUILDER_IMAGE_DIGEST --env BUILD_MODE \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/workspace \
             --volume "$GITHUB_WORKSPACE:/workspace" \
             --volume "$GITHUB_WORKSPACE/.cache:/cache" \
             --workdir /workspace \
-            "$BUILDER_IMAGE" \
+            "$BUILDER_IMAGE_DIGEST" \
             bash scripts/build-immortalwrt.sh
 
       - name: Fix cache ownership
         if: always()
         run: |
-          sudo chown -R "$(id -u):$(id -g)" .cache || true
+          sudo chown -R "$(id -u):$(id -g)" .cache artifacts || true
 
       - name: Save exact-source downloads
-        if: always()
+        if: always() && inputs.mode != 'preflight' && steps.sources.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/dl
           key: n1-dl-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ steps.sources.outputs.SOURCE_SET_ID }}-${{ hashFiles('scripts/build-immortalwrt.sh', 'scripts/normalize-golang-feed.sh', 'scripts/resolve-build-refs.sh', 'build-lock.env') }}-${{ github.run_id }}
 
+      - name: Save isolated Go modules
+        if: always() && inputs.mode != 'preflight' && steps.sources.outcome == 'success'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/go-mod
+          key: n1-go-${{ steps.sources.outputs.SOURCE_SET_ID }}-${{ github.run_id }}
+
       - name: Save compatible compiler cache
-        if: always()
+        if: always() && inputs.mode != 'preflight' && steps.sources.outcome == 'success'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .cache/ccache
           key: n1-ccache-${{ runner.os }}-${{ steps.builder.outputs.cache_id }}-${{ hashFiles('Dockerfile', 'scripts/build-immortalwrt.sh', 'build-lock.env') }}-${{ github.run_id }}
 
+      - name: Upload bounded diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: build-diagnostics-${{ github.run_id }}
+          path: artifacts/diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload rootfs artifact
+        if: inputs.mode != 'preflight'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: immortalwrt-rootfs-${{ github.run_id }}
@@ -156,6 +231,7 @@ jobs:
   release:
     name: Publish durable rootfs release
     needs: build
+    if: inputs.mode != 'preflight'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
@@ -205,10 +281,13 @@ jobs:
           ROOTFS_NAME: ${{ steps.rootfs.outputs.name }}
           ROOTFS_SHA256: ${{ steps.rootfs.outputs.sha256 }}
           ROOTFS_TAG: ${{ steps.rootfs.outputs.tag }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          rootfs_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${ROOTFS_TAG}/${ROOTFS_NAME}"
+          rootfs_url="${SERVER_URL}/${REPOSITORY}/releases/download/${ROOTFS_TAG}/${ROOTFS_NAME}"
           gh workflow run build-imm.yaml \
-            --repo "${{ github.repository }}" \
-            --ref "${{ github.ref_name }}" \
+            --repo "$REPOSITORY" \
+            --ref "$REF_NAME" \
             -f rootfs_url="$rootfs_url" \
             -f rootfs_sha256="$ROOTFS_SHA256"

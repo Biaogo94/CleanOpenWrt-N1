@@ -30,7 +30,7 @@
 
 快速打包只执行以下阶段：
 
-1. 下载最新固件 Release 中的 ARMv8 rootfs，并用其 `SHA256SUMS` 校验。
+1. 查询一次最新固件 Release，固定该 Release 的 tag 和资产 ID，再下载 ARMv8 rootfs 与同一 Release 的 `SHA256SUMS`；摘要和归档内容校验都通过才继续。
 2. 使用 `ophub/amlogic-s9xxx-openwrt` 打包为斐讯 N1 镜像并注入 `n1-overlay`。
 3. 计算校验值并发布 GitHub Release。
 
@@ -44,9 +44,91 @@
 新的固件 Release 会成为后续快速打包的默认 rootfs 来源，无需手动更新 URL 或 digest。
 普通的无线 overlay、打包脚本或 Release 流程修改不会运行 rootfs 编译。
 
-构建开始后会检查滚动 `packages` feed 的 Go 默认版本与实际目录是否一致。若上游
-提交暂时缺少对应的 `golang1.x` 目录，脚本只在本次工作树中选择该 feed 可用的最高
-版本，并将实际版本写入 `BUILD_INFO.txt`，避免上游原子提交窗口导致整轮编译失败。
+构建会检查 `packages` feed 的 Go 默认版本、host 源码、实际安装目标和通用依赖是否一致。
+若缺少默认 Go 版本，立即失败，不再猜测兼容性并回退到另一个版本。修复上游输入后，
+重新进行升级构建；故障复盘则使用原输入重放。
+
+### 快速检查与预检
+
+`Fast build checks` 在相关 PR/push 时运行，也作为 rootfs 工作流的前置 job，
+在拉取 Builder 和扩容之前检查 Shell、Actions 配置、锁文件和 Python 回归测试。
+
+本地快速检查（Python 3.10+、Bash、ShellCheck、actionlint）：
+
+```bash
+bash scripts/check.sh
+python3 -B -m unittest discover -s tests -v
+actionlint
+```
+
+Windows Git Bash 可使用 `PYTHON=python bash scripts/check.sh`。真正的编译仍要求 Linux。
+
+手动运行 rootfs 工作流时选择：
+
+- `mode=preflight`：解析/重放输入、准备源码、冻结全部 feeds、重建索引、应用补丁、
+  `make defconfig` 和必需功能/Go 依赖检查；不下载全部源码包、不编译、不发布。
+  它需要联网准备源码，不等于几秒钟的离线检查。
+- `mode=full`（默认）：同样的预检通过后才下载、编译、校验并发布。
+
+Rust/EasyTier 补丁遇到未知上游结构会明确失败，避免静默打补丁无效。
+预检不执行完整 Go 编译，不能代替最终编译器和业务包兼容性验证。
+
+### 升级与输入重放
+
+默认升级构建在开始时生成 `build-inputs.json`，包含本项目提交、构建文件摘要、
+主源码/插件 SHA、全部实际 feeds（含 routing/telephony/video）、Builder digest、
+EasyTier 二进制版本和 SHA256。源码按 SHA 获取；配置/补丁内容由构建文件摘要标识。
+清单是严格校验的 JSON，不会被 `source` 或 `eval` 执行。
+
+重放步骤：
+
+1. 找到使用新流程运行的 rootfs run，下载其 `build-inputs` artifact。
+2. 在**该清单记录的同一本项目提交**上运行工作流，填入 `replay_run_id`。
+   可以使用指向该提交的分支/tag，工作流不会替你检出清单内任意代码。
+3. 选择 `preflight` 或 `full`。清单、项目提交或构建文件摘要不匹配会失败；
+   重放不重新查询上游最新分支、EasyTier digest 或 Builder latest。
+
+Artifact 保存 30 天；成功的 rootfs Release 也保存清单。Artifact 过期后可下载
+Release 的清单到本地，用相同项目提交及文件运行以下 Linux 命令：
+
+```bash
+python3 scripts/build_inputs.py validate --manifest build-inputs.json
+builder="$(python3 -c 'import json; print(json.load(open("build-inputs.json"))["builder"])')"
+docker pull "$builder"
+mkdir -p .cache artifacts/diagnostics
+python3 scripts/run-stage.py artifacts/diagnostics build docker run --rm \
+  -e BUILD_MODE=preflight -e PYTHONDONTWRITEBYTECODE=1 \
+  -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory \
+  -e GIT_CONFIG_VALUE_0=/workspace \
+  -v "$PWD:/workspace" -v "$PWD/.cache:/cache" -w /workspace \
+  "$builder" bash scripts/build-immortalwrt.sh
+```
+
+将 `BUILD_MODE` 改为 `full` 可完整编译。第一次本地升级可先拉取 Builder latest，
+取 `docker image inspect` 返回的 RepoDigest，再运行
+`python3 scripts/build_inputs.py resolve --builder IMAGE@sha256:DIGEST`。
+旧版 r7 不含新清单，不能假装支持新协议重放。
+
+这保证输入冻结与可追溯，不承诺逐字节相同；上游资源仍须可获取。快速打包仍按
+6.12 系列选最新内核补丁版，**本次没有实现内核资产冻结或最终镜像精确重放**。
+
+### 失败诊断与缓存
+
+- 编译前单独上传 `build-inputs`；失败时仍上传 `build-diagnostics-RUN_ID`（14 天）。
+- 诊断包含输入、阶段状态/耗时、最终配置、feeds、Go 选择、缓存恢复 key 和 ccache 统计。
+- 阶段日志做令牌/Authorization/URL 脱敏，每个日志约 2 MiB 上限；不上传环境变量全集。
+  未启动到相应阶段、任务强制取消或 runner 故障时，诊断可能不完整。
+- 失败或未校验 rootfs 不进入正式发布；暂不自动上传可能很大的失败固件。
+- `.cache/dl`、`.cache/go-mod`、`.cache/ccache` 分开保存。Go 路径通过 make 变量覆盖，
+  不修改 upstream cache 代码。下载/Go 缓存保守绑定输入集，ccache 保留兼容性键。
+- 不再按 `<1024 字节` 删除下载文件，也不自动清空缓存。普通源码由 OpenWrt 下载器
+  校验；已存在的 Go 模块缓存有疑点时应定向排查，不能声称所有缓存都已重新验证。
+- 对**已知可信 SHA256 的一个缓存文件**可运行：
+  `python3 scripts/verify-cache.py .cache/dl RELATIVE_PATH EXPECTED_SHA256`。
+  加 `--evict-corrupt` 仅删除摘要不匹配的指定文件（仍返回非零，表示需重新下载）；
+  路径越界或 symlink 被拒绝。不要把它用于任意扫描删除。
+
+性能收益应根据冷/热缓存和阶段耗时对比，本项目不预先承诺提速比例。
 
 ## 构建环境镜像
 
@@ -57,8 +139,8 @@ ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 ```
 
 修改 `Dockerfile`、`.dockerignore` 或镜像工作流后，GitHub Actions 会自动重建并发布
-`latest` 镜像。独立 rootfs 工作流自动拉取最新 Builder，并把实际 digest 写入构建信息和
-缓存 key；无需手动更新 digest。快速打包工作流不使用编译容器。
+`latest` 镜像。升级构建自动解析 Builder digest，并直接以 `image@sha256:...` 启动容器；
+重放只拉取清单记录的 digest。快速打包工作流不使用编译容器。
 
 ## 内核版本
 
@@ -85,8 +167,10 @@ ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 
 `build-lock.env` 只固定上游分支和内核大版本。每次 rootfs 构建开始时解析 ImmortalWrt、
 feeds、PassWall、OpenClash、EasyTier 和 Amlogic 的最新 SHA，并在该次运行中冻结。
-默认 rootfs 通过 `rootfs-lock.env` 指向 GitHub 最新固件 Release，校验值从同一 Release
-的 `SHA256SUMS` 动态读取。
+默认打包通过 GitHub API 固定本仓库最新正式固件 Release，校验值从该固定 Release
+的 `SHA256SUMS` 读取；`rootfs-lock.env` 保留为旧版配置参考，不再用于运行时解析。
+显式 URL 覆盖仍要求 SHA256。`rootfs-source.json` 记录来源；可能含凭据或签名的
+自定义 URL 不写入发布元数据，仅保留摘要。
 
 每次构建会在 `BUILD_INFO.txt` 中记录：
 
@@ -115,7 +199,16 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 |-- .github/workflows/build-environment.yml   # GHCR 编译环境发布
 |-- build-lock.env                            # 上游分支、Builder 名称与内核大版本
 |-- rootfs-lock.env                           # 最新 Release rootfs 与校验清单地址
-|-- scripts/build-immortalwrt.sh              # 源码、插件、配置和编译逻辑
+|-- .github/workflows/check.yml              # 离线快速检查及可复用 CI
+|-- scripts/build-immortalwrt.sh              # 构建编排、补丁与配置
+|-- scripts/build_inputs.py                  # 严格输入清单、解析、重放
+|-- scripts/compile-rootfs.sh                # 预检/完整编译共用入口
+|-- scripts/preflight.py                     # 有效配置、Go 安装依赖校验
+|-- scripts/validate-rootfs.py               # 不解压的归档内容/完整性校验
+|-- scripts/resolve-rootfs.py                # 固定 Release 与校验清单
+|-- scripts/run-stage.py                    # 脱敏日志、退出状态与耗时
+|-- scripts/verify-cache.py                  # 单文件摘要验证/定向清理
+|-- tests/                                  # 生产接口回归测试
 |-- Dockerfile                                # Ubuntu 24.04 编译环境
 `-- .dockerignore
 ```
@@ -127,7 +220,8 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 
 `build-lock.env` 统一声明上游分支、Builder 镜像名称和 N1 内核大版本。rootfs 工作流
 自动跟随这些分支的最新提交，但会记录实际 SHA、Builder digest 和 source-set ID，确保
-单次构建可追溯；不同 source-set 或 Builder digest 使用不同缓存，避免跨版本污染。
+单次构建可追溯；下载/Go 缓存绑定输入集，编译缓存按 Builder 和兼容性键复用。
+现有自动 rootfs 发布、自动 N1 打包和 Latest 策略保持不变；CI 成功不等于实机验收。
 
 ## 致谢
 

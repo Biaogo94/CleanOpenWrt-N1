@@ -1,12 +1,15 @@
+# Immutable pins and workflow expressions remain single-line.
+# yamllint disable rule:line-length
+---
 name: Package Phicomm N1 firmware
 
 run-name: N1 package / run ${{ github.run_number }}
 
-on:
+"on":
   workflow_dispatch:
     inputs:
       rootfs_url:
-        description: Optional compatible rootfs URL; empty uses build-lock.env
+        description: Optional rootfs URL; empty freezes latest firmware release
         required: false
         default: ""
         type: string
@@ -45,28 +48,13 @@ jobs:
         env:
           INPUT_ROOTFS_URL: ${{ inputs.rootfs_url }}
           INPUT_ROOTFS_SHA256: ${{ inputs.rootfs_sha256 }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           . ./build-lock.env
-          . ./rootfs-lock.env
-          test "$LOCK_SCHEMA" = 2
-          test "$ROOTFS_LOCK_SCHEMA" = 2
-          if [ -n "$INPUT_ROOTFS_URL" ]; then
-            test -n "$INPUT_ROOTFS_SHA256"
-            rootfs_url="$INPUT_ROOTFS_URL"
-            rootfs_sha256="$INPUT_ROOTFS_SHA256"
-            rootfs_sha256_url=""
-          else
-            rootfs_url="$ROOTFS_URL"
-            rootfs_sha256=""
-            rootfs_sha256_url="$ROOTFS_SHA256_URL"
-          fi
-          if [ -n "$rootfs_sha256" ]; then
-            echo "$rootfs_sha256" | grep -Eq '^[0-9a-fA-F]{64}$'
-          fi
-          echo "url=$rootfs_url" >> "$GITHUB_OUTPUT"
-          echo "sha256=${rootfs_sha256,,}" >> "$GITHUB_OUTPUT"
-          echo "sha256_url=$rootfs_sha256_url" >> "$GITHUB_OUTPUT"
+          python3 scripts/build_inputs.py lock
+          python3 scripts/resolve-rootfs.py resolve --repository "$REPOSITORY" \
+            --url "$INPUT_ROOTFS_URL" --sha256 "$INPUT_ROOTFS_SHA256" >> "$GITHUB_OUTPUT"
           echo "kernel_series=$LOCK_KERNEL_SERIES" >> "$GITHUB_OUTPUT"
 
       - name: Download and verify rootfs
@@ -78,17 +66,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p openwrt-armsr
-          curl --fail --location --retry 3 --connect-timeout 15 \
+          curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 900 \
             "$ROOTFS_URL" \
             --output openwrt-armsr/rootfs.tar.gz
           if [ -z "$ROOTFS_SHA256" ]; then
-            curl --fail --location --retry 3 --connect-timeout 15 \
+            curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 120 \
               "$ROOTFS_SHA256_URL" \
               --output openwrt-armsr/SHA256SUMS
-            ROOTFS_SHA256="$(awk '$2 == "rootfs.tar.gz" || $2 ~ /rootfs\.tar\.gz$/ { print $1; exit }' openwrt-armsr/SHA256SUMS)"
+            ROOTFS_SHA256="$(python3 scripts/resolve-rootfs.py checksum --file openwrt-armsr/SHA256SUMS)"
           fi
           echo "$ROOTFS_SHA256" | grep -Eq '^[0-9a-fA-F]{64}$'
           echo "$ROOTFS_SHA256  openwrt-armsr/rootfs.tar.gz" | sha256sum -c -
+          python3 scripts/validate-rootfs.py openwrt-armsr/rootfs.tar.gz
           echo "sha256=${ROOTFS_SHA256,,}" >> "$GITHUB_OUTPUT"
 
       - name: Package Phicomm N1 image
@@ -105,7 +94,7 @@ jobs:
       - name: Prepare packaged artifact
         id: metadata
         env:
-          ROOTFS_URL: ${{ steps.rootfs.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ROOTFS_SHA256: ${{ steps.download.outputs.sha256 }}
           KERNEL_SERIES: ${{ steps.rootfs.outputs.kernel_series }}
         run: |
@@ -121,12 +110,16 @@ jobs:
           kernel_version="$(basename "$image_file" | sed -nE 's/.*_k([0-9]+\.[0-9]+\.[0-9]+)_.*/\1/p')"
           test -n "$kernel_version"
           printf '%s\n' \
-            "Rootfs source=$ROOTFS_URL" \
+            "Rootfs source=see rootfs-source.json (explicit URLs redacted)" \
+            "Project revision=$(git rev-parse HEAD)" \
+            "Packer revision=34c28d7d3161c8e4b791b91626f4b76353fb3759" \
+            "Build inputs hash=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from build_inputs import identity; print(identity())')" \
             "Rootfs SHA256=$ROOTFS_SHA256" \
             "Kernel series=$KERNEL_SERIES" \
             "Actual kernels=$kernel_version" \
-            "Workflow=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "Workflow=$RUN_URL" \
             > "$PACKAGED_OUTPUTPATH/BUILD_INFO.txt"
+          cp rootfs-source.json "$PACKAGED_OUTPUTPATH/"
           (
             cd "$PACKAGED_OUTPUTPATH"
             find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \

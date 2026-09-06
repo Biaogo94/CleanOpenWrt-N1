@@ -1,0 +1,48 @@
+---
+name: Fast build checks
+
+"on":
+    workflow_call:
+    workflow_dispatch:
+    push:
+        paths:
+            - "scripts/**"
+            - "tests/**"
+            - ".github/workflows/**"
+            - "*lock.env"
+            - "n1-overlay/**"
+            - "Dockerfile"
+    pull_request:
+        paths:
+            - "scripts/**"
+            - "tests/**"
+            - ".github/workflows/**"
+            - "*lock.env"
+            - "n1-overlay/**"
+            - "Dockerfile"
+
+permissions:
+    contents: read
+
+jobs:
+    check:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        env:
+            PYTHONDONTWRITEBYTECODE: "1"
+        steps:
+            - name: Check out repository
+              uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+            - name: Install static checkers
+              run: |
+                  sudo apt-get update -qq
+                  sudo apt-get install -y shellcheck
+                  export GOBIN="$RUNNER_TEMP/bin"
+                  go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+                  echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+            - name: Check shell syntax, workflows and lock
+              run: |
+                  bash scripts/check.sh
+                  actionlint
+            - name: Run production-interface regression tests
+              run: python3 -B -m unittest discover -s tests -v

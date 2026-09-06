@@ -1,21 +1,38 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_DIR
 readonly LOCK_FILE="${REPO_DIR}/build-lock.env"
-[[ -f "$LOCK_FILE" ]] || { echo "Missing build lock: ${LOCK_FILE}" >&2; exit 1; }
+[[ -f "$LOCK_FILE" ]] || {
+  echo "Missing build lock: ${LOCK_FILE}" >&2
+  exit 1
+}
 # shellcheck disable=SC1090
 . "$LOCK_FILE"
-[[ "${LOCK_SCHEMA:-}" == "2" ]] || { echo "Unsupported build lock schema" >&2; exit 1; }
+[[ "${LOCK_SCHEMA:-}" == "2" ]] || {
+  echo "Unsupported build lock schema" >&2
+  exit 1
+}
 
-if [[ -z "${IMMORTALWRT_REF:-}" || -z "${SOURCE_SET_ID:-}" ]]; then
-  eval "$(bash "${REPO_DIR}/scripts/resolve-build-refs.sh")"
-fi
+BUILD_MODE="${BUILD_MODE:-full}"
+[[ "$BUILD_MODE" == full || "$BUILD_MODE" == preflight ]] || {
+  echo 'BUILD_MODE must be full or preflight' >&2
+  exit 1
+}
+readonly INPUT_MANIFEST="${INPUT_MANIFEST:-${REPO_DIR}/build-inputs.json}"
+# JSON is validated by the same production interface used in CI; never eval inputs.
+input_environment="$(python3 "${REPO_DIR}/scripts/build_inputs.py" env --manifest "$INPUT_MANIFEST")"
+while IFS='=' read -r name value; do
+  export "$name=$value"
+done <<<"$input_environment"
+: "${EASYTIER_VERSION:?validated manifest must supply EasyTier version}"
 
 readonly WORKSPACE="${WORKSPACE:-/workspace}"
 readonly SOURCE_DIR="${SOURCE_DIR:-${WORKSPACE}/.build/immortalwrt}"
 readonly CACHE_DIR="${CACHE_DIR:-/cache}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:-${WORKSPACE}/artifacts/rootfs}"
+readonly DIAGNOSTIC_DIR="${DIAGNOSTIC_DIR:-${WORKSPACE}/artifacts/diagnostics}"
 readonly IMMORTALWRT_BRANCH="$LOCK_IMMORTALWRT_BRANCH"
 readonly IMMORTALWRT_REF
 readonly IMMORTALWRT_PACKAGES_REF
@@ -29,6 +46,7 @@ readonly SOURCE_SET_ID
 
 export CCACHE_DIR="${CCACHE_DIR:-${CACHE_DIR}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-3G}"
+export GO_MOD_CACHE_DIR="${CACHE_DIR}/go-mod"
 
 assert_workspace_child() {
   local candidate parent
@@ -43,12 +61,37 @@ assert_workspace_child() {
 assert_workspace_child "$SOURCE_DIR"
 assert_workspace_child "$ARTIFACT_DIR"
 rm -rf "$SOURCE_DIR" "$ARTIFACT_DIR"
-mkdir -p "$(dirname "$SOURCE_DIR")" "$CACHE_DIR/dl" "$CCACHE_DIR" "$ARTIFACT_DIR"
+mkdir -p "$(dirname "$SOURCE_DIR")" "$CACHE_DIR/dl" "$GO_MOD_CACHE_DIR" "$CCACHE_DIR" "$ARTIFACT_DIR" "$DIAGNOSTIC_DIR"
+cp "$INPUT_MANIFEST" "$DIAGNOSTIC_DIR/build-inputs.json"
+current_stage=prepare
+stage_started=$SECONDS
+stage() {
+  printf '%s\t%s\n' "$current_stage" "$((SECONDS - stage_started))" >>"$DIAGNOSTIC_DIR/timings.tsv"
+  current_stage="$1"
+  stage_started=$SECONDS
+  printf '%s\n' "$current_stage" >"$DIAGNOSTIC_DIR/current-stage.txt"
+}
+finish() {
+  local code=$?
+  trap - EXIT
+  if [[ -f "$DIAGNOSTIC_DIR/current-stage.txt" ]]; then
+    read -r current_stage <"$DIAGNOSTIC_DIR/current-stage.txt" || true
+  fi
+  printf '%s\t%s\n' "$current_stage" "$((SECONDS - stage_started))" >>"$DIAGNOSTIC_DIR/timings.tsv"
+  printf 'stage=%s\nexit_code=%s\n' "$current_stage" "$code" >"$DIAGNOSTIC_DIR/result.txt"
+  # Config originates from the repository, not from external user input.
+  [[ ! -f "$SOURCE_DIR/.config" ]] || cp "$SOURCE_DIR/.config" "$DIAGNOSTIC_DIR/effective.config"
+  ccache --show-stats >"$DIAGNOSTIC_DIR/ccache.txt" 2>/dev/null || true
+  exit "$code"
+}
+trap finish EXIT
 
 clone_at() {
   local repo="$1" branch="$2" ref="$3" destination="$4"
   echo "Cloning ${repo} branch ${branch} at ${ref}"
-  git clone --depth 1 --single-branch --branch "$branch" "$repo" "$destination"
+  # Replay does not depend on the branch still existing or resolving to its old tip.
+  git init -q "$destination"
+  git -C "$destination" remote add origin "$repo"
   timeout 900 git -C "$destination" fetch --depth 1 origin "$ref"
   git -C "$destination" checkout -q --detach FETCH_HEAD
 }
@@ -62,38 +105,23 @@ assert_repo_ref() {
   }
 }
 
+stage source
 clone_at https://github.com/immortalwrt/immortalwrt.git "$IMMORTALWRT_BRANCH" "$IMMORTALWRT_REF" "$SOURCE_DIR"
 assert_repo_ref "$SOURCE_DIR" "$IMMORTALWRT_REF"
 readonly immortalwrt_ref="$IMMORTALWRT_REF"
 
 cd "$SOURCE_DIR"
-{
-  echo "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git"
-  echo "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git"
-  cat feeds.conf.default
-} > feeds.conf
-./scripts/feeds update -a
+stage feeds
+python3 "${REPO_DIR}/scripts/build_inputs.py" feeds --manifest "$INPUT_MANIFEST" >feeds.conf
+# All feeds, including routing/telephony/video, are materialized at immutable SHAs.
+timeout 1800 ./scripts/feeds update -a
+python3 "${REPO_DIR}/scripts/build_inputs.py" verify-feeds --manifest "$INPUT_MANIFEST" --source-dir "$SOURCE_DIR"
+cp feeds.conf "$DIAGNOSTIC_DIR/feeds.conf"
 
-for feed_spec in \
-  "feeds/packages:$IMMORTALWRT_PACKAGES_REF" \
-  "feeds/luci:$IMMORTALWRT_LUCI_REF" \
-  "feeds/passwall_packages:$PASSWALL_PACKAGES_REF" \
-  "feeds/passwall_luci:$PASSWALL_LUCI_REF"; do
-  feed_dir="${feed_spec%%:*}"
-  feed_ref="${feed_spec#*:}"
-  echo "Pinning ${feed_dir} at ${feed_ref}"
-  timeout 900 git -C "$feed_dir" fetch --depth 1 origin "$feed_ref"
-  git -C "$feed_dir" checkout -q --detach FETCH_HEAD
-  assert_repo_ref "$feed_dir" "$feed_ref"
-done
-
-# The first feeds update clones branch heads and creates indexes for those
-# revisions. Normalize the pinned packages feed, then recreate every index;
-# otherwise feeds install can mix package metadata from one revision with
-# Makefiles from another (for example, install golang1.26 while the pinned
-# feed's generic golang package depends on golang1.27/host).
-readonly golang_version="$(bash "${REPO_DIR}/scripts/normalize-golang-feed.sh" \
+# Recreate indexes after verifying the pinned source. Never silently downgrade Go.
+golang_version="$(bash "${REPO_DIR}/scripts/normalize-golang-feed.sh" \
   "${SOURCE_DIR}/feeds/packages/lang/golang")"
+readonly golang_version
 ./scripts/feeds update -i -a
 
 ./scripts/feeds install -a
@@ -104,16 +132,15 @@ golang_host_makefile="${SOURCE_DIR}/package/feeds/packages/golang${golang_versio
   exit 1
 }
 echo "Using Go host package golang${golang_version}"
+printf '%s\n' "$golang_version" >"$DIAGNOSTIC_DIR/go-version.txt"
+stage patches
 
 # The rolling packages feed may enable Rust's CI LLVM download. Those
 # artifacts are routinely garbage-collected, which makes reproducible builds
 # fail with a 404. Build LLVM locally instead.
 rust_makefile="${SOURCE_DIR}/feeds/packages/lang/rust/Makefile"
 if [[ -f "$rust_makefile" ]]; then
-  sed -i \
-    -e 's/--set=llvm\.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/g' \
-    -e 's/--set=llvm\.download-ci-llvm=1/--set=llvm.download-ci-llvm=false/g' \
-    "$rust_makefile"
+  python3 "${REPO_DIR}/scripts/patch-rust.py" "$rust_makefile"
 fi
 
 assert_repo_ref feeds/passwall_packages "$PASSWALL_PACKAGES_REF"
@@ -130,55 +157,23 @@ rm -rf package/OpenClash
 clone_at https://github.com/EasyTier/luci-app-easytier.git "$LOCK_EASYTIER_OPENWRT_BRANCH" "$EASYTIER_OPENWRT_REF" package/easytier-openwrt
 assert_repo_ref package/easytier-openwrt "$EASYTIER_OPENWRT_REF"
 readonly easytier_openwrt_ref="$EASYTIER_OPENWRT_REF"
-readonly easytier_version="$(sed -n 's/^EASYTIER_VERSION=//p' package/easytier-openwrt/version.mk)"
-readonly easytier_asset="easytier-linux-aarch64-v${easytier_version}.zip"
+easytier_version="$(sed -n 's/^EASYTIER_VERSION=//p' package/easytier-openwrt/version.mk)"
+readonly easytier_version
+[[ "$easytier_version" == "$EASYTIER_VERSION" ]] || {
+  echo 'EasyTier manifest/source version mismatch' >&2
+  exit 1
+}
 
 clone_at https://github.com/ophub/luci-app-amlogic.git "$LOCK_AMLOGIC_BRANCH" "$AMLOGIC_REF" package/luci-app-amlogic
 assert_repo_ref package/luci-app-amlogic "$AMLOGIC_REF"
 readonly amlogic_ref="$AMLOGIC_REF"
 
-curl_args=(
-  --fail --silent --show-error --location
-  --header "Accept: application/vnd.github+json"
-  --header "X-GitHub-Api-Version: 2022-11-28"
-)
-if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-  curl_args+=(--header "Authorization: Bearer ${GITHUB_TOKEN}")
-fi
-readonly easytier_digest="$(
-  curl "${curl_args[@]}" \
-    "https://api.github.com/repos/EasyTier/EasyTier/releases/tags/v${easytier_version}" \
-    | jq -r --arg asset "$easytier_asset" \
-      '.assets[] | select(.name == $asset) | .digest // empty'
-)"
-readonly easytier_sha256="${easytier_digest#sha256:}"
-if [[ ! "$easytier_sha256" =~ ^[0-9a-fA-F]{64}$ ]]; then
-  echo "Unable to resolve a SHA256 digest for ${easytier_asset}" >&2
-  exit 1
-fi
-export EASYTIER_AARCH64_SHA256="$easytier_sha256"
+readonly easytier_sha256="$EASYTIER_AARCH64_SHA256"
 
-python3 - <<'PY'
-from pathlib import Path
+python3 "${REPO_DIR}/scripts/patch-easytier.py" package/easytier-openwrt/easytier-noweb/Makefile
 
-path = Path("package/easytier-openwrt/easytier-noweb/Makefile")
-lines = path.read_text(encoding="utf-8").splitlines()
-matches = [
-    index
-    for index, line in enumerate(lines)
-    if "unzip -o -j $(PKG_BUILD_DIR)/easytier-$(PKG_VERSION).zip" in line
-]
-if len(matches) != 1:
-    raise SystemExit(f"Expected one EasyTier extraction command, found {len(matches)}")
-lines.insert(
-    matches[0],
-    '\t\techo "$(EASYTIER_AARCH64_SHA256)  '
-    '$(PKG_BUILD_DIR)/easytier-$(PKG_VERSION).zip" | sha256sum -c -; ' + "\\",
-)
-path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
-
-cat > .config <<'EOF'
+stage config
+cat >.config <<'EOF'
 CONFIG_TARGET_armsr=y
 CONFIG_TARGET_armsr_armv8=y
 CONFIG_TARGET_armsr_armv8_DEVICE_generic=y
@@ -221,61 +216,38 @@ EOF
 
 make defconfig
 
-required_symbols=(
-  PACKAGE_wifi-scripts
-  PACKAGE_luci-app-amlogic
-  PACKAGE_luci-app-easytier
-  PACKAGE_luci-app-openclash
-  PACKAGE_luci-app-passwall
-)
-for symbol in "${required_symbols[@]}"; do
-  grep -qx "CONFIG_${symbol}=y" .config || {
-    echo "Required build option CONFIG_${symbol}=y is unavailable" >&2
-    exit 1
-  }
-done
-
-rm -rf dl
-ln -s "$CACHE_DIR/dl" dl
-ccache --max-size "$CCACHE_MAXSIZE"
-ccache --zero-stats
-
-make download -j"$(nproc)" || make download -j1 V=s
-find -L dl -type f -size -1024c -print -delete
-make download -j"$(nproc)"
-make -j"$(nproc)" || make -j1 V=s
+stage preflight
+if [[ "$BUILD_MODE" == full ]]; then
+  rm -rf dl
+  ln -s "$CACHE_DIR/dl" dl
+  ccache --max-size "$CCACHE_MAXSIZE"
+  ccache --zero-stats
+fi
+bash "${REPO_DIR}/scripts/compile-rootfs.sh" "$SOURCE_DIR" "$BUILD_MODE" "$DIAGNOSTIC_DIR"
+if [[ "$BUILD_MODE" == preflight ]]; then
+  echo 'Preflight complete; compilation and publication skipped.'
+  exit 0
+fi
 ccache --show-stats
+stage validate
 
 shopt -s nullglob
 rootfs_files=(bin/targets/armsr/armv8/*-generic-rootfs.tar.gz)
-if (( ${#rootfs_files[@]} == 0 )); then
+if ((${#rootfs_files[@]} == 0)); then
   echo "No armsr/armv8 rootfs archive was produced" >&2
   exit 1
 fi
 rootfs_archive="${rootfs_files[0]}"
-archive_has() {
-  # Do not use grep -q: its early exit sends SIGPIPE to tar/sed under
-  # pipefail, falsely reporting an existing member as missing. Drain the
-  # entire listing so corrupt/truncated archives also remain fatal.
-  tar -tzf "$rootfs_archive" \
-    | sed 's#^\./##' \
-    | grep -Fx "$1" >/dev/null
+((${#rootfs_files[@]} == 1)) || {
+  echo 'Ambiguous rootfs output' >&2
+  exit 1
 }
-required_rootfs_paths=(
-  lib/netifd/wireless/mac80211.sh
-  lib/firmware/brcm/brcmfmac43455-sdio.bin
-  lib/firmware/brcm/brcmfmac43455-sdio.clm_blob
-  usr/share/passwall/clash_subconverter.lua
-)
-for required_path in "${required_rootfs_paths[@]}"; do
-  archive_has "$required_path" || {
-    echo "Required N1 rootfs path is missing: ${required_path}" >&2
-    exit 1
-  }
-done
+python3 "${REPO_DIR}/scripts/validate-rootfs.py" "$rootfs_archive"
+stage export
 cp "$rootfs_archive" "$ARTIFACT_DIR/"
+cp "$INPUT_MANIFEST" "$ARTIFACT_DIR/build-inputs.json"
 
-cat > "$ARTIFACT_DIR/BUILD_INFO.txt" <<EOF
+cat >"$ARTIFACT_DIR/BUILD_INFO.txt" <<EOF
 ImmortalWrt branch=${IMMORTALWRT_BRANCH}
 ImmortalWrt=${immortalwrt_ref}
 ImmortalWrt packages=${IMMORTALWRT_PACKAGES_REF}

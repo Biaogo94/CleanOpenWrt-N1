@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.build/
+.cache/
+artifacts/
+build-inputs.json
+rootfs-source.json
+replay/
