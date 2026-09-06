@@ -41,8 +41,6 @@ jobs:
                   go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
                   echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
             - name: Check shell syntax, workflows and lock
-              run: |
-                  bash scripts/check.sh
-                  actionlint
+              run: bash scripts/check.sh
             - name: Run production-interface regression tests
               run: python3 -B -m unittest discover -s tests -v

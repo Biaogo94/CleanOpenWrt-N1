@@ -253,13 +253,19 @@ jobs:
           test -n "$rootfs_file"
           rootfs_name="${rootfs_file#./}"
           rootfs_sha256="$(sha256sum "$rootfs_name" | awk '{print $1}')"
+          # Keep the temporary output outside the scanned directory.
+          sums_file="$(mktemp ../rootfs-sums.XXXXXX)"
+          trap 'rm -f "$sums_file"' EXIT
           find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \
             | sort -z \
             | xargs -0 -r sha256sum \
-            > SHA256SUMS
-          echo "name=$rootfs_name" >> "$GITHUB_OUTPUT"
-          echo "sha256=$rootfs_sha256" >> "$GITHUB_OUTPUT"
-          echo "tag=ImmortalWrt-N1-rootfs-r${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            > "$sums_file"
+          mv "$sums_file" SHA256SUMS
+          {
+            echo "name=$rootfs_name"
+            echo "sha256=$rootfs_sha256"
+            echo "tag=ImmortalWrt-N1-rootfs-r${{ github.run_number }}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish rootfs release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
