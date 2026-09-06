@@ -1,5 +1,6 @@
 # CleanOpenWrt-N1
 
+[![Fast build checks](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/check.yml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/check.yml)
 [![Package firmware](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-imm.yaml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-imm.yaml)
 [![Build rootfs](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-rootfs.yaml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-rootfs.yaml)
 [![Build environment](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-environment.yml/badge.svg)](https://github.com/Biaogo94/CleanOpenWrt-N1/actions/workflows/build-environment.yml)
@@ -58,10 +59,15 @@
 ```bash
 bash scripts/check.sh
 python3 -B -m unittest discover -s tests -v
-actionlint
 ```
 
-Windows Git Bash 可使用 `PYTHON=python bash scripts/check.sh`。真正的编译仍要求 Linux。
+`scripts/check.sh` 已包含 actionlint，无需另行执行。ShellCheck 和 actionlint 必须都在
+**同一终端的 PATH** 中；缺少任意工具，脚本会直接失败。这样可确保 actionlint 的
+ShellCheck 集成检查不会因找不到工具而被静默跳过，本地检查与 CI 使用同一入口。
+
+Windows Git Bash 可使用 `PYTHON=python bash scripts/check.sh`，测试命令相应改用
+`python -B -m unittest discover -s tests -v`；同样需先配置两个检查器的 PATH。
+真正的编译仍要求 Linux。
 
 手动运行 rootfs 工作流时选择：
 
@@ -146,7 +152,8 @@ ghcr.io/biaogo94/cleanopenwrt-n1-builder:latest
 
 默认 N1 打包锁定 `build-lock.env` 中的 `6.12` 系列，并由 ophub 在该系列中选择最新
 可用补丁版。若要切换到其他大版本，需要修改配置并重新完成打包与启动测试。
-实际版本会写入固件内的 `BUILD_INFO.txt`。
+实际版本会写入最终固件 Release 的发布资产 `BUILD_INFO.txt`；不据此保证镜像内部
+也包含同一份构建信息。
 
 ## 无线中继
 
@@ -172,12 +179,15 @@ feeds、PassWall、OpenClash、EasyTier 和 Amlogic 的最新 SHA，并在该次
 显式 URL 覆盖仍要求 SHA256。`rootfs-source.json` 记录来源；可能含凭据或签名的
 自定义 URL 不写入发布元数据，仅保留摘要。
 
-每次构建会在 `BUILD_INFO.txt` 中记录：
+两类 Release 的构建信息用途不同：
 
-- ImmortalWrt、PassWall、OpenClash 和 EasyTier OpenWrt 的实际 Git 提交
-- EasyTier 实际版本和 aarch64 发布包 SHA256
-- 构建环境镜像及其 digest
-- 请求和实际使用的内核版本
+- **Rootfs Release**：`BUILD_INFO.txt` 记录主源码、feeds、插件的实际 Git 提交，
+  EasyTier 版本与 aarch64 发布包 SHA256、Builder digest、Go 版本和内核系列。
+  同时发布 `build-inputs.json`，用于输入校验与重放；此时尚未确定 N1 打包的实际内核补丁版。
+- **最终固件 Release**：`BUILD_INFO.txt` 记录打包所用的本项目提交、打包器提交、
+  构建文件摘要、rootfs SHA256、请求的内核系列及实际内核版本；
+  `rootfs-source.json` 记录来源 Release/资产信息或显式覆盖的摘要。
+  这份文件不重复包含 rootfs 的全部上游 SHA，需要结合对应的 Rootfs Release 查询。
 
 EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest 进行校验。下载固件后，请继续使用 Release 中的 `SHA256SUMS` 校验最终文件。
 
@@ -198,7 +208,7 @@ EasyTier 二进制在解压前会根据 GitHub Release 提供的 SHA256 digest �
 |-- .github/workflows/build-rootfs.yaml       # 独立、手动的慢速 rootfs 构建
 |-- .github/workflows/build-environment.yml   # GHCR 编译环境发布
 |-- build-lock.env                            # 上游分支、Builder 名称与内核大版本
-|-- rootfs-lock.env                           # 最新 Release rootfs 与校验清单地址
+|-- rootfs-lock.env                           # 旧版配置参考，不参与当前运行时解析
 |-- .github/workflows/check.yml              # 离线快速检查及可复用 CI
 |-- scripts/build-immortalwrt.sh              # 构建编排、补丁与配置
 |-- scripts/build_inputs.py                  # 严格输入清单、解析、重放
