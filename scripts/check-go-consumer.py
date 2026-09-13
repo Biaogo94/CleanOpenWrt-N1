@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Verify enabled Xray source declares a Go version supported by host toolchain."""
+
 import hashlib
 import http.client
 import io
 import json
 import re
 import tarfile
-from urllib.parse import urlsplit
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def version(text):
@@ -27,7 +28,11 @@ def download(url):
         raise ValueError("Xray source URL must be a safe HTTPS URL")
     connection = http.client.HTTPSConnection(parsed.netloc, timeout=60)
     try:
-        connection.request("GET", parsed.path + ("?" + parsed.query if parsed.query else ""), headers={"User-Agent": "CleanOpenWrt-N1"})
+        connection.request(
+            "GET",
+            parsed.path + ("?" + parsed.query if parsed.query else ""),
+            headers={"User-Agent": "CleanOpenWrt-N1"},
+        )
         response = connection.getresponse()
         if response.status != 200:
             raise ValueError("Xray source download failed")
@@ -62,23 +67,39 @@ def check(source, selected_go):
     if hashlib.sha256(payload).hexdigest() != expected_hash:
         raise ValueError("Xray source SHA256 mismatch")
     with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
-        go_mod = next((m for m in tar.getmembers() if m.name.endswith("/go.mod") or m.name == "go.mod"), None)
+        go_mod = next(
+            (
+                m
+                for m in tar.getmembers()
+                if m.name.endswith("/go.mod") or m.name == "go.mod"
+            ),
+            None,
+        )
         if go_mod is None:
             raise ValueError("Xray source go.mod is missing")
         go_file = tar.extractfile(go_mod)
         if go_file is None:
             raise ValueError("Xray source go.mod cannot be read")
-        minimum = re.search(r"^go\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$", go_file.read().decode(), re.MULTILINE)
+        minimum = re.search(
+            r"^go\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)\s*$",
+            go_file.read().decode(),
+            re.MULTILINE,
+        )
     if minimum is None:
         raise ValueError("Xray go.mod has no supported Go requirement")
     minimum_go = minimum.group(1)
     if version(selected_go) < version(minimum_go):
         raise ValueError(f"Xray requires Go {minimum_go}; selected {selected_go}")
-    return {"package_version": version_text, "minimum_go": minimum_go, "sha256": expected_hash}
+    return {
+        "package_version": version_text,
+        "minimum_go": minimum_go,
+        "sha256": expected_hash,
+    }
 
 
 if __name__ == "__main__":
     import sys
+
     try:
         print(json.dumps(check(sys.argv[1], sys.argv[2]), sort_keys=True))
     except (OSError, ValueError, tarfile.TarError, UnicodeError) as error:

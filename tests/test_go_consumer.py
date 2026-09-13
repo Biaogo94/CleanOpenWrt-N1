@@ -1,4 +1,5 @@
 """Exercise the source-hash/Go-version gate, not a mocked version comparison."""
+
 import hashlib
 import importlib.util
 import io
@@ -11,7 +12,9 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-spec = importlib.util.spec_from_file_location("consumer", SCRIPTS / "check-go-consumer.py")
+spec = importlib.util.spec_from_file_location(
+    "consumer", SCRIPTS / "check-go-consumer.py"
+)
 if spec is None or spec.loader is None:
     raise RuntimeError("unable to load consumer checker")
 consumer = importlib.util.module_from_spec(spec)
