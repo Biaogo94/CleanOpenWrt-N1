@@ -239,6 +239,12 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out validation scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          sparse-checkout: |
+            scripts/validate-rootfs.py
+
       - name: Download rootfs artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -249,9 +255,10 @@ jobs:
         id: rootfs
         run: |
           cd rootfs
-          rootfs_file="$(find . -maxdepth 1 -type f -name '*rootfs.tar.gz' -print -quit)"
-          test -n "$rootfs_file"
-          rootfs_name="${rootfs_file#./}"
+          mapfile -t rootfs_files < <(find . -maxdepth 1 -type f -name '*rootfs.tar.gz' -printf '%P\n')
+          test "${#rootfs_files[@]}" -eq 1
+          rootfs_name="${rootfs_files[0]}"
+          python3 ../scripts/validate-rootfs.py "$rootfs_name"
           rootfs_sha256="$(sha256sum "$rootfs_name" | awk '{print $1}')"
           # Keep the temporary output outside the scanned directory.
           sums_file="$(mktemp ../rootfs-sums.XXXXXX)"
@@ -266,6 +273,18 @@ jobs:
             echo "sha256=$rootfs_sha256"
             echo "tag=ImmortalWrt-N1-rootfs-r${{ github.run_number }}"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Reject existing rootfs release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ROOTFS_TAG: ${{ steps.rootfs.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$ROOTFS_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "Release tag already exists: $ROOTFS_TAG" >&2
+            exit 1
+          fi
 
       - name: Publish rootfs release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65

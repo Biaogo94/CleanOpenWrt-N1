@@ -133,6 +133,9 @@ golang_host_makefile="${SOURCE_DIR}/package/feeds/packages/golang${golang_versio
 }
 echo "Using Go host package golang${golang_version}"
 printf '%s\n' "$golang_version" >"$DIAGNOSTIC_DIR/go-version.txt"
+# Verify the actual enabled Xray consumer before make download/compile.
+python3 "${REPO_DIR}/scripts/check-go-consumer.py" "$SOURCE_DIR" "$golang_version" \
+  >"$DIAGNOSTIC_DIR/go-consumer.json"
 stage patches
 
 # The rolling packages feed may enable Rust's CI LLVM download. Those

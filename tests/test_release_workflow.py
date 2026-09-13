@@ -1,9 +1,12 @@
 """Execute and lint the actual rootfs-release workflow shell block."""
 
 import hashlib
+import io
 import os
 import shutil
 import subprocess
+import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,14 +46,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_release_checksums_exclude_their_own_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            shutil.copy(ROOT / "scripts/validate-rootfs.py", scripts / "validate-rootfs.py")
             artifacts = root / "rootfs"
             artifacts.mkdir()
-            files = {"image-rootfs.tar.gz": b"fixture", "BUILD INFO.txt": b"metadata"}
-            for name, content in files.items():
-                (artifacts / name).write_bytes(content)
+            rootfs = artifacts / "image-rootfs.tar.gz"
+            with tarfile.open(rootfs, "w:gz") as archive:
+                for name in ("lib/netifd/wireless/mac80211.sh", "lib/firmware/brcm/brcmfmac43455-sdio.bin", "lib/firmware/brcm/brcmfmac43455-sdio.clm_blob", "usr/share/passwall/clash_subconverter.lua"):
+                    info = tarfile.TarInfo(name)
+                    info.size = 1
+                    archive.addfile(info, io.BytesIO(b"x"))
+            files = {"image-rootfs.tar.gz": rootfs.read_bytes(), "BUILD INFO.txt": b"metadata"}
+            (artifacts / "BUILD INFO.txt").write_bytes(files["BUILD INFO.txt"])
             (artifacts / "SHA256SUMS").write_text("stale checksum file\n")
             output = root / "outputs"
-            env = {**os.environ, "GITHUB_OUTPUT": output.as_posix()}
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            python3 = bin_dir / "python3"
+            python3.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+            python3.chmod(0o755)
+            env = {**os.environ, "GITHUB_OUTPUT": output.as_posix(), "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")}
             result = subprocess.run(
                 ["bash", "-c", release_script()],
                 cwd=root,
