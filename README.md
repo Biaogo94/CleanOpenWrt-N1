@@ -9,7 +9,7 @@
 
 ## 主要功能
 
-- ImmortalWrt、feeds 和插件在 rootfs 构建开始时自动解析配置分支的最新提交
+- ImmortalWrt、feeds 和插件在 rootfs 构建开始时自动解析配置分支的最新提交（packages feed 使用与 PassWall 当前 Go 依赖匹配的 `master` 分支）
 - 锁定 `6.12` 内核系列，N1 打包时自动选择该系列最新补丁版
 - PassWall 与简体中文界面
 - OpenClash
